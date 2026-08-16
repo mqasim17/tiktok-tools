@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TikTok Tools</title>
+<style>
+:root{--bg:#090b10;--panel:#12151d;--panel2:#0d1016;--border:#292e3a;--text:#f1f2f7;--muted:#969cab;--accent:#665cff;--accent2:#7b73ff;--good:#71dfaa;--bad:#ff8793}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 20% 0,#1a1d2b 0,#090b10 42%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.container{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:34px 0 60px}.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:800;color:#8c86ff}.hero h1{font-size:38px;margin:7px 0 6px}.hero p{color:var(--muted);margin:0;line-height:1.55}
+.nav{display:flex;gap:8px;flex-wrap:wrap;margin:24px 0 16px}.tab{width:auto;border:1px solid var(--border);background:#171b24;color:#dfe2eb;border-radius:11px;padding:11px 16px;font-weight:800;cursor:pointer}.tab:hover{border-color:#484f62}.tab.active{background:var(--accent);border-color:var(--accent2);color:#fff}
+.panel{display:none}.panel.active{display:block}.card{background:rgba(18,21,29,.96);border:1px solid var(--border);border-radius:17px;padding:20px;margin-bottom:15px;box-shadow:0 18px 50px #0005}.card h2{margin:0 0 7px;font-size:22px}.card h3{margin:0}.sub{color:var(--muted);font-size:13px;line-height:1.5}.grid{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:12px}@media(max-width:800px){.grid{grid-template-columns:1fr}}
+label{display:block;color:#aeb4c2;font-size:12px;font-weight:700;margin:0 0 7px}input,textarea,select{width:100%;background:#090c12;color:#fff;border:1px solid #303645;border-radius:10px;padding:12px;font:inherit;outline:none}input:focus,textarea:focus,select:focus{border-color:#6f68ff}textarea{min-height:220px;resize:vertical;line-height:1.5}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:13px}button{font:inherit}.btn{width:auto;border:1px solid var(--accent2);background:var(--accent);color:#fff;border-radius:10px;padding:11px 16px;font-weight:800;cursor:pointer}.btn.alt{background:#1b202a;border-color:#353c4b}.btn.danger{border-color:#63313a;background:#26151a}.btn:disabled{opacity:.55;cursor:not-allowed}
+.status{font-size:13px;color:var(--muted);margin-top:10px}.status.good{color:var(--good)}.status.bad{color:var(--bad)}.badge{display:inline-flex;border:1px solid #353b49;border-radius:999px;padding:5px 9px;color:#b6bcc9;font-size:11px}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.hint{font-size:12px;color:#858c9b;line-height:1.5;margin-top:7px}
+.video-list{border:1px solid var(--border);border-radius:12px;overflow:auto;max-height:560px;margin-top:13px}.video-item{display:flex;gap:12px;align-items:center;padding:12px;border-bottom:1px solid #252a34}.video-item:last-child{border-bottom:0}.video-item input{width:18px;height:18px;flex:0 0 auto}.thumb{width:62px;height:82px;object-fit:cover;border-radius:8px;background:#20242d;flex:0 0 auto}.video-main{min-width:0;flex:1}.video-title{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.meta{font-size:12px;color:#8f96a5;margin-top:5px}.url{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.results{display:flex;flex-direction:column;gap:12px;margin-top:15px}.result{background:var(--panel2);border:1px solid var(--border);border-radius:13px;padding:16px}.result-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}.result h3{font-size:16px;margin:0}.mono{white-space:pre-wrap;background:#080a0f;border:1px solid #242936;border-radius:10px;padding:14px;margin-top:12px;max-height:450px;overflow:auto;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace}.empty{padding:24px;text-align:center;color:var(--muted);border:1px dashed #303645;border-radius:12px;margin-top:13px}.settings-note{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.settings-note{grid-template-columns:1fr}}
+.footer{margin-top:18px;color:#777f8f;font-size:11px;line-height:1.5}.credit{font-weight:700;color:#c5c9d3}.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="container">
+  <header class="hero">
+    <div class="eyebrow">TikTok Utility · Low-credit workflow</div>
+    <h1>TikTok Tools</h1>
+    <p>Extract transcripts or download media from videos you already have. Creator browsing is separate, so direct-link tools do not load profiles, comments, likes, or followers.</p>
+  </header>
+
+  <nav class="nav" aria-label="Tools">
+    <button class="tab active" data-panel="creator">👤 Creator Videos</button>
+    <button class="tab" data-panel="transcripts">📝 Bulk Transcript Extractor</button>
+    <button class="tab" data-panel="media">⬇ Media Downloader</button>
+    <button class="tab" data-panel="settings">⚙ API Keys</button>
+  </nav>
+
+  <section id="creator" class="panel active">
+    <div class="card">
+      <div class="toolbar"><div><h2>Creator Videos</h2><div class="sub">Enter a username when you want to browse that creator's videos and select specific ones.</div></div><span class="badge">1 credit / profile-video request</span></div>
+      <div class="grid" style="margin-top:16px">
+        <div><label for="handle">TikTok username</label><input id="handle" placeholder="@username"></div>
+        <div><label for="sort">Sort</label><select id="sort"><option value="latest">Latest</option><option value="popular">Popular</option></select></div>
+        <div><label for="maxPages">Maximum pages</label><input id="maxPages" type="number" min="1" max="100" value="1"></div>
+      </div>
+      <div class="actions"><button class="btn" id="creatorBtn">Load videos</button><button class="btn alt" id="creatorClear">Clear</button></div>
+      <div id="creatorStatus" class="status"></div>
+    </div>
+
+    <div class="card hidden" id="creatorResults">
+      <div class="toolbar"><strong>Videos <span id="creatorCount" class="badge"></span></strong><div class="actions" style="margin:0"><button class="btn alt" id="selectAll">Select all</button><button class="btn alt" id="clearSelect">Clear selection</button></div></div>
+      <div id="creatorList" class="video-list"></div>
+      <div class="actions"><button class="btn" id="creatorToTranscript">Extract selected transcripts</button><button class="btn alt" id="creatorToMedia">Download selected media</button></div>
+    </div>
+  </section>
+
+  <section id="transcripts" class="panel">
+    <div class="card">
+      <div class="toolbar"><div><h2>Bulk Transcript Extractor</h2><div class="sub">Paste one or many direct TikTok video links. No creator/profile request is made.</div></div><span class="badge">1 credit / unique video request · cached = 0</span></div>
+      <div style="margin-top:16px"><label for="transcriptLinks">TikTok video links</label><textarea id="transcriptLinks" placeholder="https://www.tiktok.com/@user/video/123...\nhttps://www.tiktok.com/@user/video/456...\nhttps://www.tiktok.com/@user/video/789..."></textarea></div>
+      <div class="actions"><button class="btn" id="transcriptBtn">Extract transcripts</button><button class="btn alt" id="copyAll">Copy all</button><button class="btn alt" id="downloadTxt">Download TXT</button><button class="btn alt" id="clearTranscript">Clear</button></div>
+      <div id="transcriptStatus" class="status"></div>
+      <div id="transcriptResults" class="results"></div>
+    </div>
+  </section>
+
+  <section id="media" class="panel">
+    <div class="card">
+      <div class="toolbar"><div><h2>Media Downloader</h2><div class="sub">Paste direct TikTok links. First prepare the media URLs; downloads after that do not call Scrape Creators again.</div></div><span class="badge">1 credit / unique video info request · cached = 0</span></div>
+      <div style="margin-top:16px"><label for="mediaLinks">TikTok video links</label><textarea id="mediaLinks" placeholder="https://www.tiktok.com/@user/video/123...\nhttps://www.tiktok.com/@user/video/456..."></textarea></div>
+      <div class="actions"><button class="btn" id="mediaPrepare">Prepare downloads</button><button class="btn alt" id="downloadAudioZip">Download all audio ZIP</button><button class="btn alt" id="downloadVideoZip">Download all video ZIP</button><button class="btn alt" id="clearMedia">Clear</button></div>
+      <div id="mediaStatus" class="status"></div>
+      <div id="mediaResults" class="results"></div>
+    </div>
+  </section>
+
+  <section id="settings" class="panel">
+    <div class="card">
+      <div class="toolbar"><div><h2>API Key Pool</h2><div class="sub">Paste your own Scrape Creators API keys once, one per line. The server uses them round-robin for separate API requests.</div></div><span id="keyCount" class="badge">0 keys loaded</span></div>
+      <div style="margin-top:16px"><label for="apiKeys">API keys</label><textarea id="apiKeys" style="min-height:240px" placeholder="key_1\nkey_2\nkey_3\n...\nkey_100"></textarea></div>
+      <div class="grid" style="margin-top:12px">
+        <div><label for="region">Proxy region (optional)</label><input id="region" value="US" placeholder="US"></div>
+        <div><label for="cacheAge">Cache window</label><select id="cacheAge"><option value="1d">1 day</option><option value="3d">3 days</option><option value="7d">7 days</option><option value="14d">14 days</option><option value="30d" selected>30 days</option></select></div>
+        <div style="display:flex;align-items:end"><button class="btn" id="saveKeys">Save API keys</button></div>
+      </div>
+      <div id="keyStatus" class="status"></div>
+    </div>
+    <div class="card settings-note">
+      <div><strong>Rotation</strong><div class="hint">Request 1 → key 1, request 2 → key 2, and so on. After the last key, it loops back to the first.</div></div>
+      <div><strong>Restart behavior</strong><div class="hint">The pool is kept in server memory. A Render restart/spin-down clears it, so you may need to save the pool again.</div></div>
+    </div>
+  </section>
+
+  <div class="card footer"><span class="credit">Credit-saving design:</span> direct transcript/media tools use the TikTok Video Info endpoint only. They do not load profile, likes, comments, followers, or engagement data. Media files are downloaded from URLs already returned by the API, so the media download itself does not spend another Scrape Creators credit.</div>
+</div>
+<script>
+let creatorVideos=[];let transcriptData=[];let mediaData=[];
+const $=id=>document.getElementById(id);
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function status(id,msg,kind=''){ $(id).innerHTML=msg?`<span class="status ${kind}">${esc(msg)}</span>`:''; }
+function showPanel(id){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.panel===id));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id===id));window.scrollTo({top:0,behavior:'smooth'});}
+document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>showPanel(b.dataset.panel)));
+function common(){return {region:$('region').value.trim(),cache_age:$('cacheAge').value};}
+async function jsonFetch(url,body){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});let d={};try{d=await r.json()}catch{}if(!r.ok||!d.success)throw new Error(d.error||`Request failed (${r.status})`);return d;}
+async function refreshKeyStatus(){try{const d=await fetch('/api/keys/status').then(r=>r.json());$('keyCount').textContent=`${d.count||0} keys loaded`;}catch{}}
+$('saveKeys').onclick=async()=>{const keys=$('apiKeys').value;try{const d=await jsonFetch('/api/keys',{keys});$('keyCount').textContent=`${d.count} keys loaded`;status('keyStatus',`Saved ${d.count} API keys. Rotation is active.`,'good');}catch(e){status('keyStatus',e.message,'bad')}};
+refreshKeyStatus();
+
+$('creatorBtn').onclick=async()=>{const handle=$('handle').value.trim();if(!handle){status('creatorStatus','Enter a TikTok username.','bad');showPanel('settings');return}const b=$('creatorBtn');b.disabled=true;b.textContent='Loading…';status('creatorStatus','Loading creator videos…');try{const d=await jsonFetch('/api/videos',{...common(),handle,sort_by:$('sort').value,max_pages:Number($('maxPages').value)||1});creatorVideos=d.videos||[];$('creatorResults').classList.remove('hidden');$('creatorCount').textContent=creatorVideos.length;renderCreator();status('creatorStatus',`Loaded ${creatorVideos.length} video(s) across ${d.pages} page(s).`,'good');}catch(e){status('creatorStatus',e.message,'bad')}finally{b.disabled=false;b.textContent='Load videos'}};
+function renderCreator(){$('creatorList').innerHTML=creatorVideos.length?creatorVideos.map((v,i)=>`<label class="video-item"><input type="checkbox" data-i="${i}">${v.cover?`<img class="thumb" src="${esc(v.cover)}" onerror="this.style.display='none'">`:`<div class="thumb"></div>`}<div class="video-main"><div class="video-title">${esc(v.title)}</div><div class="meta">${esc(v.duration||'Duration unavailable')}</div><div class="meta url">${esc(v.url)}</div></div></label>`).join(''):'<div class="empty">No videos returned.</div>';}
+$('selectAll').onclick=()=>document.querySelectorAll('#creatorList input').forEach(x=>x.checked=true);$('clearSelect').onclick=()=>document.querySelectorAll('#creatorList input').forEach(x=>x.checked=false);
+function selectedCreator(){return [...document.querySelectorAll('#creatorList input:checked')].map(x=>creatorVideos[Number(x.dataset.i)]).filter(Boolean)}
+$('creatorToTranscript').onclick=()=>{const links=selectedCreator().map(v=>v.url).filter(Boolean).join('\n');if(!links){status('creatorStatus','Select at least one video first.','bad');return}showPanel('transcripts');$('transcriptLinks').value=links};
+$('creatorToMedia').onclick=()=>{const links=selectedCreator().map(v=>v.url).filter(Boolean).join('\n');if(!links){status('creatorStatus','Select at least one video first.','bad');return}showPanel('media');$('mediaLinks').value=links};
+$('creatorClear').onclick=()=>{$('handle').value='';creatorVideos=[];$('creatorResults').classList.add('hidden');$('creatorList').innerHTML='';status('creatorStatus','')};
+
+$('transcriptBtn').onclick=async()=>{const links=$('transcriptLinks').value.trim();if(!links){status('transcriptStatus','Paste at least one TikTok video URL.','bad');return}const b=$('transcriptBtn');b.disabled=true;b.textContent='Extracting…';$('transcriptResults').innerHTML='';status('transcriptStatus','Extracting one direct video request per unique link…');try{const d=await jsonFetch('/api/transcripts',{...common(),links});transcriptData=d.results||[];renderTranscripts();const charged=transcriptData.reduce((n,x)=>n+(Number(x.credits_charged)||0),0);status('transcriptStatus',`Finished ${transcriptData.length} video(s). Credits charged in this run: ${charged}.`,'good')}catch(e){status('transcriptStatus',e.message,'bad')}finally{b.disabled=false;b.textContent='Extract transcripts'}};
+function renderTranscripts(){$('transcriptResults').innerHTML=transcriptData.map(x=>x.success?`<article class="result"><div class="result-head"><div><h3>Video ${x.index} — ${esc(x.title)}</h3><div class="meta">Duration: ${esc(x.duration||'Unavailable')} · ${x.cached?'Cached · 0 credits':`API request · ${Number(x.credits_charged)||1} credit`}</div></div><button class="btn alt copyOne" data-index="${x.index}">Copy</button></div><div class="mono">${esc(x.transcript||'[No transcript returned]')}</div></article>`:`<article class="result"><div class="result-head"><div><h3>Video ${x.index}</h3><div class="meta url">${esc(x.url)}</div></div></div><div class="status bad">${esc(x.error)}</div></article>`).join('')||'<div class="empty">Results will appear here.</div>';document.querySelectorAll('.copyOne').forEach(btn=>btn.onclick=()=>{const x=transcriptData.find(v=>v.index===Number(btn.dataset.index));if(x)copyText(x.transcript||'')});}
+$('copyAll').onclick=()=>{if(!transcriptData.length){status('transcriptStatus','Nothing to copy yet.','bad');return}const text=transcriptData.map(x=>`VIDEO ${x.index}\nTITLE: ${x.title||'Untitled'}\nDURATION: ${x.duration||'Unknown'}\n\n${x.transcript||'[No transcript returned]'}`).join('\n\n========================================\n\n');copyText(text)};
+$('downloadTxt').onclick=()=>{if(!transcriptData.length){status('transcriptStatus','Nothing to download yet.','bad');return}const text=transcriptData.map(x=>`============================================================\nVIDEO ${x.index}\nTITLE: ${x.title||'Untitled'}\nDURATION: ${x.duration||'Unknown'}\nURL: ${x.url}\n\n${x.transcript||'[No transcript returned]'}\n`).join('\n');downloadText(text,'tiktok_transcripts.txt')};
+$('clearTranscript').onclick=()=>{$('transcriptLinks').value='';transcriptData=[];$('transcriptResults').innerHTML='';status('transcriptStatus','')};
+
+$('mediaPrepare').onclick=async()=>{const links=$('mediaLinks').value.trim();if(!links){status('mediaStatus','Paste at least one TikTok video URL.','bad');return}const b=$('mediaPrepare');b.disabled=true;b.textContent='Preparing…';$('mediaResults').innerHTML='';status('mediaStatus','Getting media URLs one time per unique video…');try{const d=await jsonFetch('/api/media-info',{...common(),links});mediaData=d.results||[];renderMedia();const charged=mediaData.reduce((n,x)=>n+(Number(x.credits_charged)||0),0);status('mediaStatus',`Prepared ${mediaData.length} video(s). Credits charged in this run: ${charged}.`,'good')}catch(e){status('mediaStatus',e.message,'bad')}finally{b.disabled=false;b.textContent='Prepare downloads'}};
+function renderMedia(){$('mediaResults').innerHTML=mediaData.map(x=>x.success?`<article class="result"><div class="result-head"><div><h3>Video ${x.index} — ${esc(x.title)}</h3><div class="meta">Duration: ${esc(x.duration||'Unavailable')} · ${x.cached?'Cached · 0 credits':`API request · ${Number(x.credits_charged)||1} credit`}</div></div><div class="actions" style="margin:0"><button class="btn alt mediaOne" data-index="${x.index}" data-type="audio" ${x.audio_url?'':'disabled'}>Audio</button><button class="btn alt mediaOne" data-index="${x.index}" data-type="video" ${x.video_url?'':'disabled'}>Video</button></div></div></article>`:`<article class="result"><h3>Video ${x.index}</h3><div class="meta url">${esc(x.url)}</div><div class="status bad">${esc(x.error)}</div></article>`).join('')||'<div class="empty">Prepare downloads to see individual audio/video buttons.</div>';document.querySelectorAll('.mediaOne').forEach(btn=>btn.onclick=()=>downloadSingle(Number(btn.dataset.index),btn.dataset.type));}
+async function downloadSingle(index,type){const item=mediaData.find(x=>x.index===index);if(!item)return;const url=type==='audio'?item.audio_url:item.video_url;if(!url){status('mediaStatus',`No ${type} URL was returned for Video ${index}.`,'bad');return}const safe=(item.title||`video_${index}`).replace(/[^A-Za-z0-9._-]+/g,'_').replace(/^[-_.]+|[-_.]+$/g,'').slice(0,80)||`video_${index}`;try{const r=await fetch('/api/proxy-download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({media_url:url,media_type:type,filename:`${String(index).padStart(2,'0')}_${safe}.${type==='audio'?'mp3':'mp4'}`})});if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.error||'Download failed')}const blob=await r.blob();saveBlob(blob,`${safe}.${type==='audio'?'mp3':'mp4'}`)}catch(e){status('mediaStatus',e.message,'bad')}}
+async function downloadZip(type){if(!mediaData.length){status('mediaStatus','Prepare downloads first.','bad');return}try{const r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({media_type:type,media_items:mediaData.filter(x=>x.success)})});if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.error||'ZIP download failed')}saveBlob(await r.blob(),`tiktok_${type}s.zip`);status('mediaStatus',`Downloaded ${type} ZIP. No additional API credits were used.`,'good')}catch(e){status('mediaStatus',e.message,'bad')}}
+$('downloadAudioZip').onclick=()=>downloadZip('audio');$('downloadVideoZip').onclick=()=>downloadZip('video');$('clearMedia').onclick=()=>{$('mediaLinks').value='';mediaData=[];$('mediaResults').innerHTML='';status('mediaStatus','')};
+function copyText(text){navigator.clipboard.writeText(text).then(()=>{}).catch(()=>{});}
+function downloadText(text,name){saveBlob(new Blob([text],{type:'text/plain;charset=utf-8'}),name)}
+function saveBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+</script>
+</body>
+</html>
