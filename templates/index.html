@@ -52,13 +52,13 @@ key_3
   <section id="creator" class="panel active">
     <div class="card">
       <h2>Creator Videos</h2>
-      <div class="sub">Load a controlled number of videos or keep paging until the profile is exhausted. Popular mode asks the API for popular videos; latest mode asks for newest videos. Loading uses 1 credit per profile-video API request.</div>
+      <div class="sub">Load a controlled number of videos or keep paging until the profile is exhausted. Popular mode asks the API for popular videos; latest mode asks for newest videos. Loading uses 1 credit per profile-video API request and runs in the background so the page does not wait on one long request.</div>
       <div class="grid" style="margin-top:13px">
         <div><label>TikTok username</label><input id="handle" placeholder="@username"></div>
         <div><label>Sort</label><select id="sort"><option value="latest">Latest</option><option value="popular">Most popular</option></select></div>
         <div><label>Load amount</label><select id="loadCount"><option value="10">10 videos</option><option value="25">25 videos</option><option value="50">50 videos</option><option value="100">100 videos</option><option value="250">250 videos</option><option value="500" selected>500 videos</option><option value="1000">1000 videos</option><option value="all">All available</option></select></div>
       </div>
-      <div class="actions"><button class="btn" id="creatorBtn">Load Videos</button><button class="btn alt" id="creatorClear">Clear</button></div>
+      <div class="actions"><button class="btn" id="creatorBtn">Load Videos</button><button class="btn alt" id="creatorStop" disabled>Stop</button><button class="btn alt" id="creatorClear">Clear</button></div>
       <div id="creatorStatus" class="status"></div>
       <div id="creatorProgress" class="progress hidden"><div class="bar" id="creatorBar"></div></div>
     </div>
@@ -128,22 +128,75 @@ $('saveKeys').onclick=async()=>{
   try{const d=await jsonFetch('/api/keys',{keys});$('keyCount').textContent=`${d.count} keys loaded`;status('keyStatus',`Saved ${d.count} API keys. They will be restored automatically on this browser.`,'good');}
   catch(e){status('keyStatus',`Browser copy saved, but server could not load them: ${e.message}`,'bad')}
 };
-$('clearKeys').onclick=async()=>{localStorage.removeItem('tiktok_scrape_creator_keys');$('apiKeys').value='';try{await jsonFetch('/api/keys',{keys:'x'});}catch{}$('keyCount').textContent='0 keys';status('keyStatus','Keys forgotten from this browser. Reload the page to clear the server pool too.','good')};
+$('clearKeys').onclick=async()=>{localStorage.removeItem('tiktok_scrape_creator_keys');$('apiKeys').value='';try{const d=await jsonFetch('/api/keys',{keys:''});$('keyCount').textContent=`${d.count||0} keys loaded`;}catch{}status('keyStatus','Keys forgotten from this browser and cleared from the current server instance.','good')};
 $('apiKeys').addEventListener('input',()=>localStorage.setItem('tiktok_scrape_creator_keys',$('apiKeys').value));
 restoreLocalKeys();
 
 function setBar(id,percent){$(id).style.width=Math.max(0,Math.min(100,percent))+'%';}
 
-$('creatorBtn').onclick=async()=>{
-  const handle=$('handle').value.trim(); if(!handle){status('creatorStatus','Enter a TikTok username.','bad');return}
-  const b=$('creatorBtn');b.disabled=true;b.textContent='Loading…';$('creatorProgress').classList.remove('hidden');setBar('creatorBar',5);status('creatorStatus','Paging through the profile. Large loads can take a little while…');
-  creatorVideos=[];$('creatorResults').classList.add('hidden');
+let creatorJobId=null;
+let creatorPollTimer=null;
+let creatorLastLoaded=0;
+
+async function pollCreatorJob(){
+  if(!creatorJobId) return;
   try{
-    const d=await jsonFetch('/api/videos',{...common(),handle,sort_by:$('sort').value,count:$('loadCount').value});
-    creatorVideos=d.videos||[];setBar('creatorBar',100);$('creatorResults').classList.remove('hidden');$('creatorCount').textContent=creatorVideos.length;renderCreator();
-    status('creatorStatus',`Loaded ${creatorVideos.length} video(s) across ${d.pages} API request(s). Credits charged: ${d.credits_charged}.`,'good');
-  }catch(e){status('creatorStatus',e.message,'bad')}
-  finally{b.disabled=false;b.textContent='Load Videos'}
+    const r=await fetch('/api/creator-jobs/'+creatorJobId);
+    const d=await r.json();
+    if(!r.ok||!d.success) throw new Error(d.error||'Could not read fetch progress');
+    creatorVideos=d.videos||[];
+    if(d.loaded!==creatorLastLoaded){
+      creatorLastLoaded=d.loaded;
+      $('creatorResults').classList.remove('hidden');
+      $('creatorCount').textContent=creatorVideos.length;
+      renderCreator();
+    }
+    const target=$('loadCount').value;
+    const targetText=target==='all'?'all available':target;
+    const loaded=d.loaded||0;
+    const pct=target==='all' ? Math.min(99, Math.max(5, (d.page||0)*3)) : Math.min(100, Math.round((loaded/Number(target))*100));
+    setBar('creatorBar',pct);
+    const extra=d.credits_charged!=null?` · Credits: ${d.credits_charged}`:'';
+    if(d.status==='running'){
+      status('creatorStatus',`${d.message||'Fetching…'} · ${loaded} loaded${target!=='all'?` / ${targetText}`:''}${extra}`);
+      creatorPollTimer=setTimeout(pollCreatorJob,900);
+      return;
+    }
+    if(d.status==='done'){
+      setBar('creatorBar',100);
+      status('creatorStatus',`${d.message||'Finished.'}${extra}`,'good');
+    }else if(d.status==='cancelled'){
+      status('creatorStatus',`${d.message||'Stopped.'}${extra}`,'good');
+    }else if(d.status==='error'){
+      setBar('creatorBar',100);
+      status('creatorStatus',`${d.message||'Fetch failed.'} Error: ${d.error||'Unknown error'}. Loaded ${loaded} videos.${extra}`,'bad');
+    }
+    creatorJobId=null;
+    $('creatorBtn').disabled=false;$('creatorBtn').textContent='Load Videos';$('creatorStop').disabled=true;
+    creatorPollTimer=null;
+  }catch(e){
+    status('creatorStatus',`Progress check failed: ${e.message}`,'bad');
+    creatorPollTimer=setTimeout(pollCreatorJob,1500);
+  }
+}
+
+$('creatorBtn').onclick=async()=>{
+  const handle=$('handle').value.trim();
+  if(!handle){status('creatorStatus','Enter a TikTok username.','bad');return}
+  $('creatorBtn').disabled=true;$('creatorBtn').textContent='Starting…';$('creatorStop').disabled=false;
+  creatorVideos=[];creatorLastLoaded=0;$('creatorResults').classList.add('hidden');$('creatorList').innerHTML='';$('creatorProgress').classList.remove('hidden');setBar('creatorBar',2);
+  status('creatorStatus','Starting background fetch…');
+  try{
+    const d=await jsonFetch('/api/creator-jobs',{...common(),handle,sort_by:$('sort').value,count:$('loadCount').value});
+    creatorJobId=d.job_id;
+    pollCreatorJob();
+  }catch(e){$('creatorBtn').disabled=false;$('creatorBtn').textContent='Load Videos';$('creatorStop').disabled=true;status('creatorStatus',e.message,'bad')}
+};
+
+$('creatorStop').onclick=async()=>{
+  if(!creatorJobId)return;
+  $('creatorStop').disabled=true;
+  try{await fetch('/api/creator-jobs/'+creatorJobId+'/cancel',{method:'POST'});}catch{}
 };
 
 function renderCreator(){
@@ -158,7 +211,7 @@ ${v.cover?`<img class="thumb" src="${esc(v.cover)}" onerror="this.style.display=
 function selectedCreator(){return [...document.querySelectorAll('#creatorList input:checked')].map(x=>creatorVideos[Number(x.dataset.i)]).filter(Boolean);}
 $('selectAll').onclick=()=>document.querySelectorAll('#creatorList input').forEach(x=>x.checked=true);
 $('clearSelect').onclick=()=>document.querySelectorAll('#creatorList input').forEach(x=>x.checked=false);
-$('creatorClear').onclick=()=>{creatorVideos=[];$('handle').value='';$('creatorResults').classList.add('hidden');$('creatorList').innerHTML='';status('creatorStatus','');$('creatorProgress').classList.add('hidden')};
+$('creatorClear').onclick=async()=>{if(creatorJobId){try{await fetch('/api/creator-jobs/'+creatorJobId+'/cancel',{method:'POST'})}catch{}} creatorJobId=null;creatorVideos=[];$('handle').value='';$('creatorResults').classList.add('hidden');$('creatorList').innerHTML='';status('creatorStatus','');$('creatorProgress').classList.add('hidden');$('creatorBtn').disabled=false;$('creatorBtn').textContent='Load Videos';$('creatorStop').disabled=true};
 
 async function startBulkJob(items,type,statusId,progressId,button){
   if(!items.length){status(statusId,'Select or prepare at least one downloadable video.','bad');return}
