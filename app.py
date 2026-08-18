@@ -28,6 +28,8 @@ KEY_LOCK = threading.Lock()
 # In-memory bulk download jobs for the current Render instance.
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+CREATOR_JOBS = {}
+CREATOR_JOBS_LOCK = threading.Lock()
 JOB_TTL_SECONDS = 60 * 60
 
 def normalize_keys(raw):
@@ -259,13 +261,167 @@ def api_keys_status():
 @app.post("/api/keys")
 def api_keys_save():
     body = request.get_json(silent=True) or {}
-    count = set_api_keys(body.get("keys") or "")
+    raw = body.get("keys") or ""
+    count = set_api_keys(raw)
     if count == 0:
-        return jsonify(success=False, error="Add at least one API key."), 400
+        return jsonify(success=True, count=0)
     return jsonify(success=True, count=count)
 
-@app.post("/api/videos")
-def creator_videos():
+def creator_job_new():
+    job_id = uuid.uuid4().hex
+    job = {
+        "status": "queued",
+        "handle": "",
+        "sort_by": "latest",
+        "target": "10",
+        "target_count": 10,
+        "videos": [],
+        "loaded": 0,
+        "page": 0,
+        "credits_charged": 0,
+        "has_more": True,
+        "message": "Queued",
+        "error": None,
+        "created": time.time(),
+        "cancel_requested": False,
+    }
+    with CREATOR_JOBS_LOCK:
+        CREATOR_JOBS[job_id] = job
+    return job_id
+
+def creator_job_update(job_id, **updates):
+    with CREATOR_JOBS_LOCK:
+        if job_id in CREATOR_JOBS:
+            CREATOR_JOBS[job_id].update(updates)
+
+def creator_job_get(job_id):
+    with CREATOR_JOBS_LOCK:
+        job = CREATOR_JOBS.get(job_id)
+        if not job:
+            return None
+        # Return a shallow copy; videos is intentionally shared as read-only here.
+        return dict(job)
+
+def creator_job_cancelled(job_id):
+    with CREATOR_JOBS_LOCK:
+        return bool(CREATOR_JOBS.get(job_id, {}).get("cancel_requested"))
+
+def fetch_profile_page(params, retries=2):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return api_get("/v3/tiktok/profile/videos", require_key(), params)
+        except Exception as exc:
+            last_error = exc
+            text = str(exc)
+            # Retry transient upstream/server errors once with the next key.
+            if not any(code in text for code in ("HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504")):
+                break
+            time.sleep(0.75 * (attempt + 1))
+    raise last_error or RuntimeError("Profile video request failed")
+
+def creator_fetch_worker(job_id):
+    job = creator_job_get(job_id)
+    if not job:
+        return
+    handle = job["handle"]
+    sort_by = job["sort_by"]
+    region = job["region"]
+    target_count = job["target_count"]
+    cursor = None
+    page = 0
+    all_videos = []
+    credits = 0
+    try:
+        creator_job_update(job_id, status="running", message="Fetching page 1…")
+        # A generous safety cap prevents an accidental infinite cursor loop while still
+        # allowing very large profiles to finish. "All" stops on has_more=false.
+        safety_max_pages = 2000
+        while page < safety_max_pages:
+            if creator_job_cancelled(job_id):
+                creator_job_update(job_id, status="cancelled", message=f"Stopped with {len(all_videos)} videos loaded.", videos=all_videos)
+                return
+            if target_count is not None and len(all_videos) >= target_count:
+                break
+
+            params = {"handle": handle, "sort_by": sort_by, "trim": "true"}
+            if region:
+                params["region"] = region
+            if cursor is not None:
+                params["max_cursor"] = str(cursor)
+
+            page_number = page + 1
+            creator_job_update(job_id, page=page_number, message=f"Fetching page {page_number}…")
+            try:
+                data = fetch_profile_page(params, retries=2)
+            except Exception as exc:
+                # Preserve all partial results instead of returning a generic 500.
+                creator_job_update(
+                    job_id,
+                    status="error",
+                    error=str(exc),
+                    message=f"Stopped on page {page_number}; {len(all_videos)} videos loaded.",
+                    videos=all_videos,
+                    loaded=len(all_videos),
+                    credits_charged=credits,
+                )
+                return
+
+            page += 1
+            credits += int(data.get("credits_charged") or 0)
+            batch = data.get("aweme_list") or []
+            before = len(all_videos)
+            for item in batch:
+                parsed = extract_profile_video(item, handle)
+                if parsed["url"]:
+                    all_videos.append(parsed)
+                    if target_count is not None and len(all_videos) >= target_count:
+                        break
+
+            creator_job_update(
+                job_id,
+                page=page,
+                loaded=len(all_videos),
+                credits_charged=credits,
+                has_more=bool(data.get("has_more")),
+                videos=all_videos,
+                message=f"Fetching page {page} · found {len(all_videos)} videos…",
+            )
+
+            if target_count is not None and len(all_videos) >= target_count:
+                break
+            if not data.get("has_more"):
+                break
+            next_cursor = data.get("max_cursor")
+            if next_cursor is None or str(next_cursor) == str(cursor):
+                break
+            cursor = next_cursor
+
+        complete = (target_count is not None and len(all_videos) >= target_count) or not creator_job_get(job_id).get("has_more")
+        creator_job_update(
+            job_id,
+            status="done",
+            videos=all_videos,
+            loaded=len(all_videos),
+            page=page,
+            credits_charged=credits,
+            complete=complete,
+            message=f"Finished. {len(all_videos)} videos loaded across {page} page(s).",
+        )
+    except Exception as exc:
+        creator_job_update(
+            job_id,
+            status="error",
+            error=str(exc),
+            videos=all_videos,
+            loaded=len(all_videos),
+            page=page,
+            credits_charged=credits,
+            message=f"Unexpected error after {len(all_videos)} videos.",
+        )
+
+@app.post("/api/creator-jobs")
+def creator_job_start():
     body = request.get_json(silent=True) or {}
     handle = (body.get("handle") or "").strip().lstrip("@")
     sort_by = body.get("sort_by") or "latest"
@@ -273,56 +429,43 @@ def creator_videos():
     target = body.get("count") or "10"
     if not handle:
         return jsonify(success=False, error="Enter a TikTok username."), 400
-
     if target == "all":
         target_count = None
-        max_pages = 500
     else:
         try:
             target_count = max(1, min(int(target), 2000))
-            max_pages = 500
         except Exception:
             return jsonify(success=False, error="Invalid video count."), 400
+    # Fail fast if no key is loaded; otherwise the background job would just error later.
+    if key_count() == 0:
+        return jsonify(success=False, error="No API keys are loaded. Open API Keys and save at least one key."), 400
 
-    items, cursor, pages, charged = [], None, 0, 0
-    try:
-        while pages < max_pages and (target_count is None or len(items) < target_count):
-            params = {"handle": handle, "sort_by": sort_by, "trim": "true"}
-            if region:
-                params["region"] = region
-            if cursor is not None:
-                params["max_cursor"] = str(cursor)
+    job_id = creator_job_new()
+    creator_job_update(job_id, handle=handle, sort_by=sort_by, region=region, target=target, target_count=target_count)
+    threading.Thread(target=creator_fetch_worker, args=(job_id,), daemon=True).start()
+    return jsonify(success=True, job_id=job_id)
 
-            data = api_get("/v3/tiktok/profile/videos", require_key(), params)
-            charged += int(data.get("credits_charged") or 0)
-            batch = data.get("aweme_list") or []
-            for item in batch:
-                parsed = extract_profile_video(item, handle)
-                if parsed["url"]:
-                    items.append(parsed)
-                    if target_count is not None and len(items) >= target_count:
-                        break
+@app.get("/api/creator-jobs/<job_id>")
+def creator_job_status(job_id):
+    job = creator_job_get(job_id)
+    if not job:
+        return jsonify(success=False, error="Creator job not found or expired."), 404
+    return jsonify(success=True, **job)
 
-            pages += 1
-            if not data.get("has_more") or target_count is not None and len(items) >= target_count:
-                break
-            next_cursor = data.get("max_cursor")
-            if next_cursor is None or str(next_cursor) == str(cursor):
-                break
-            cursor = next_cursor
+@app.post("/api/creator-jobs/<job_id>/cancel")
+def creator_job_cancel(job_id):
+    with CREATOR_JOBS_LOCK:
+        if job_id not in CREATOR_JOBS:
+            return jsonify(success=False, error="Creator job not found or expired."), 404
+        CREATOR_JOBS[job_id]["cancel_requested"] = True
+    return jsonify(success=True)
 
-        return jsonify(
-            success=True,
-            videos=items,
-            loaded=len(items),
-            pages=pages,
-            credits_charged=charged,
-            complete=(target_count is None and not data.get("has_more")) or (
-                target_count is not None and len(items) >= target_count
-            ),
-        )
-    except Exception as e:
-        return jsonify(success=False, error=str(e), loaded=len(items), pages=pages), 502
+@app.post("/api/videos")
+def creator_videos_legacy():
+    # Compatibility route: start a background job instead of blocking this request.
+    body = request.get_json(silent=True) or {}
+    with app.test_request_context(json=body):
+        return creator_job_start()
 
 @app.post("/api/transcripts")
 def bulk_transcripts():
