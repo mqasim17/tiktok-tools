@@ -14,6 +14,12 @@ from urllib.parse import urlparse
 import requests
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+
+@app.errorhandler(413)
+def request_too_large(_exc):
+    return jsonify(success=False, error="Request body is too large. Large creator downloads use server-side job IDs instead of sending all video objects."), 413
+
 
 BASE = "https://api.scrapecreators.com"
 API_TIMEOUT = 90
@@ -651,13 +657,35 @@ def bulk_zip_worker(job_id, items, media_type):
 def bulk_download():
     cleanup_jobs()
     body = request.get_json(silent=True) or {}
-    items = [
-        x for x in (body.get("items") or [])
-        if x.get("success") is not False
-    ]
     media_type = body.get("media_type") or "video"
     if media_type not in {"video", "audio"}:
         return jsonify(success=False, error="Invalid media type."), 400
+
+    items = []
+    creator_job_id = (body.get("creator_job_id") or "").strip()
+
+    # Preferred large-creator path: send only selected indices. The actual
+    # video records are already stored in the creator background job.
+    if creator_job_id:
+        creator_job = creator_job_get(creator_job_id)
+        if not creator_job:
+            return jsonify(success=False, error="Creator load job is no longer available. Reload the creator videos."), 409
+
+        videos = creator_job.get("videos") or []
+        raw_indices = body.get("indices") or []
+        try:
+            indices = sorted({int(i) for i in raw_indices})
+        except Exception:
+            return jsonify(success=False, error="Invalid selected video indices."), 400
+
+        for i in indices:
+            if 0 <= i < len(videos):
+                items.append(videos[i])
+
+    # Direct-media compatibility path.
+    if not items:
+        items = [x for x in (body.get("items") or []) if x.get("success") is not False]
+
     if not items:
         return jsonify(success=False, error="No downloadable videos were supplied."), 400
 
@@ -668,14 +696,15 @@ def bulk_download():
         daemon=True,
     )
     thread.start()
-    return jsonify(success=True, job_id=job_id, total=len(items))
+    return jsonify(success=True, job_id=job_id, total=len(items),
+                   source="creator_job" if creator_job_id else "items")
 
 @app.get("/api/jobs/<job_id>")
 def job_status(job_id):
     cleanup_jobs()
     job = get_job(job_id)
     if not job:
-        return jsonify(success=False, error="Job not found or expired."), 404
+        return jsonify(success=False, error="Job not found or expired.", status="missing"), 404
     public = {k: v for k, v in job.items() if k != "file"}
     return jsonify(success=True, **public)
 
@@ -693,6 +722,19 @@ def job_download(job_id):
         download_name=os.path.basename(job["file"]),
         mimetype="application/zip",
     )
+
+
+@app.post("/api/export-links")
+def export_links():
+    body = request.get_json(silent=True) or {}
+    links = []
+    seen = set()
+    for item in (body.get("videos") or []):
+        url = (item.get("url") or "").strip()
+        if url and url not in seen:
+            seen.add(url)
+            links.append(url)
+    return Response("\n".join(links) + ("\n" if links else ""), mimetype="text/plain")
 
 @app.post("/api/proxy-download")
 def proxy_download():
@@ -714,6 +756,18 @@ def proxy_download():
         )
     except Exception as exc:
         return jsonify(success=False, error=f"Media download failed: {exc}"), 502
+
+@app.errorhandler(404)
+def api_or_page_404(error):
+    if request.path.startswith("/api/"):
+        return jsonify(success=False, error="API route not found.", path=request.path), 404
+    return error
+
+@app.errorhandler(500)
+def api_or_page_500(error):
+    if request.path.startswith("/api/"):
+        return jsonify(success=False, error="Internal server error."), 500
+    return error
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))

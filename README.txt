@@ -1,15 +1,9 @@
-TikTok Tools v5 — background creator fetching and bulk downloading.
+TikTok Tools v7
 
-Render settings:
-Build: pip install -r requirements.txt
-Start: gunicorn app:app --bind 0.0.0.0:$PORT
-Root Directory: blank
-Instance: Free
-
-Creator Videos now run as a background job. The browser polls progress while the server follows cursor pagination, so large accounts do not depend on one long HTTP request. Partial videos remain available if a later page fails.
-
-Load choices: 10, 25, 50, 100, 250, 500, 1000, or All available.
-Sort: Latest or Most popular.
-
-Bulk ZIP creation is also a background job with progress and controlled concurrency.
-API keys are kept in the browser localStorage and restored to the server pool on page load. The active server pool is in memory.
+Fixes:
+- Large creator ZIP downloads no longer POST hundreds of full video objects.
+- Creator selections are referenced by server-side creator_job_id + indices.
+- Request-size (413) failures return JSON.
+- Browser JSON parsing reports HTML/proxy responses clearly.
+- Background creator loading and ZIP jobs remain progressive.
+- API keys remain browser-persisted via localStorage.
