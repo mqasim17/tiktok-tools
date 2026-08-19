@@ -347,6 +347,90 @@ def cleanup_job_files():
     except OSError:
         pass
 
+def creator_fetch_worker(job_id):
+    """Paginate the Profile Videos endpoint in the background and persist progress."""
+    job = creator_job_get(job_id)
+    if not job:
+        return
+    handle = job.get("handle", "")
+    sort_by = job.get("sort_by", "latest")
+    region = job.get("region", "US")
+    target = job.get("target", "10")
+    target_count = job.get("target_count")
+    cursor = None
+    videos = []
+    page = 0
+    credits = 0
+    try:
+        creator_job_update(job_id, status="running", message="Fetching page 1…")
+        while True:
+            if creator_job_cancelled(job_id):
+                creator_job_update(job_id, status="cancelled", videos=videos, loaded=len(videos), page=page,
+                                   credits_charged=credits, has_more=True, message=f"Stopped after {len(videos)} videos.")
+                return
+            params = {"handle": handle, "sort_by": sort_by, "trim": "true"}
+            if region:
+                params["region"] = region
+            if cursor is not None:
+                params["max_cursor"] = str(cursor)
+            page += 1
+            creator_job_update(job_id, page=page, message=f"Fetching page {page}…")
+            try:
+                data = api_get("/v3/tiktok/profile/videos", require_key(), params)
+            except Exception as exc:
+                # Preserve partial results so the user can still download what was found.
+                creator_job_update(
+                    job_id,
+                    status="error",
+                    videos=videos,
+                    loaded=len(videos),
+                    page=page,
+                    credits_charged=credits,
+                    has_more=True,
+                    error=str(exc),
+                    message=f"Profile fetch failed on page {page}."
+                )
+                return
+            credits += int(data.get("credits_charged") or 0)
+            batch = data.get("aweme_list") or []
+            for item in batch:
+                parsed = extract_profile_video(item, handle)
+                if parsed.get("url"):
+                    videos.append(parsed)
+                    if target_count is not None and len(videos) >= target_count:
+                        break
+            has_more = bool(data.get("has_more"))
+            creator_job_update(
+                job_id,
+                videos=videos,
+                loaded=len(videos),
+                page=page,
+                credits_charged=credits,
+                has_more=has_more,
+                message=f"Fetching page {page} — found {len(videos)} videos."
+            )
+            if target_count is not None and len(videos) >= target_count:
+                videos = videos[:target_count]
+                creator_job_update(job_id, status="done", videos=videos, loaded=len(videos), page=page,
+                                   credits_charged=credits, has_more=has_more,
+                                   message=f"Loaded {len(videos)} videos.")
+                return
+            if not has_more:
+                creator_job_update(job_id, status="done", videos=videos, loaded=len(videos), page=page,
+                                   credits_charged=credits, has_more=False,
+                                   message=f"Loaded {len(videos)} videos. Profile exhausted.")
+                return
+            next_cursor = data.get("max_cursor")
+            if next_cursor is None or str(next_cursor) == str(cursor):
+                creator_job_update(job_id, status="done", videos=videos, loaded=len(videos), page=page,
+                                   credits_charged=credits, has_more=has_more,
+                                   message=f"Loaded {len(videos)} videos. Pagination cursor stopped.")
+                return
+            cursor = next_cursor
+    except Exception as exc:
+        creator_job_update(job_id, status="error", videos=videos, loaded=len(videos), page=page,
+                           credits_charged=credits, error=str(exc), message="Creator fetch failed.")
+
 @app.post("/api/creator-jobs")
 def creator_job_start():
     body = request.get_json(silent=True) or {}
@@ -381,10 +465,10 @@ def creator_job_status(job_id):
 
 @app.post("/api/creator-jobs/<job_id>/cancel")
 def creator_job_cancel(job_id):
-    with CREATOR_JOBS_LOCK:
-        if job_id not in CREATOR_JOBS:
-            return jsonify(success=False, error="Creator job not found or expired."), 404
-        CREATOR_JOBS[job_id]["cancel_requested"] = True
+    job = creator_job_get(job_id)
+    if not job:
+        return jsonify(success=False, error="Creator job not found or expired."), 404
+    creator_job_update(job_id, cancel_requested=True)
     return jsonify(success=True)
 
 @app.post("/api/videos")
