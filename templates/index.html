@@ -271,9 +271,12 @@ async function startBulkJob(items,type,statusId,progressId,button,creatorMode=fa
   setBar(progressId,2);
   status(statusId,`Starting ${type} ZIP for ${items.length} video(s)…`);
   try{
-    const payload = creatorMode
-      ? {creator_job_id:creatorJobId, indices:[...document.querySelectorAll('#creatorList input:checked')].map(x=>Number(x.dataset.i)), media_type:type}
-      : {items, media_type:type};
+    const payload = {
+      items: items.map(v=>({
+        url:v.url||'', title:v.title||'', video_url:v.video_url||'', audio_url:v.audio_url||'', success:true
+      })),
+      media_type:type
+    };
 
     const d=await jsonFetch('/api/bulk-download',payload);
     const jobId=d.job_id;
