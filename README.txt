@@ -18,3 +18,5 @@ v11 final:
 - Bulk media uses up to 8 concurrent downloads with reusable HTTP sessions.
 - ZIP is ZIP_STORED for maximum speed because MP4/MP3 are already compressed.
 - API routes always return JSON errors for /api/* paths.
+
+v12 fix: restored the Flask @app.post('/api/media-info') route decorator. The Media Downloader Prepare Downloads endpoint now maps to the existing concurrent media-info handler.

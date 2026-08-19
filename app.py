@@ -574,6 +574,7 @@ def bulk_transcripts():
     return jsonify(success=True, results=results, credits_charged=charged)
 
 
+@app.post("/api/media-info")
 def bulk_media_info():
     body = request.get_json(silent=True) or {}
     try:
