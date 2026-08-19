@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify, Response, send_file
 import io
+import json
 import os
 import re
 import shutil
@@ -31,12 +32,13 @@ API_KEYS = []
 API_KEY_INDEX = 0
 KEY_LOCK = threading.Lock()
 
-# In-memory bulk download jobs for the current Render instance.
-JOBS = {}
-JOBS_LOCK = threading.Lock()
-CREATOR_JOBS = {}
-CREATOR_JOBS_LOCK = threading.Lock()
+# File-backed job state. This avoids losing jobs when a request is handled by
+# another Gunicorn worker/process during the same running instance.
+JOB_ROOT = os.path.join(tempfile.gettempdir(), "tiktok_tool_jobs")
+os.makedirs(JOB_ROOT, exist_ok=True)
 JOB_TTL_SECONDS = 60 * 60
+JOB_LOCKS = {}
+JOB_LOCKS_LOCK = threading.Lock()
 
 def normalize_keys(raw):
     seen = set()
@@ -273,158 +275,77 @@ def api_keys_save():
         return jsonify(success=True, count=0)
     return jsonify(success=True, count=count)
 
+def job_dir(job_id):
+    path = os.path.join(JOB_ROOT, job_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def job_lock(job_id):
+    with JOB_LOCKS_LOCK:
+        return JOB_LOCKS.setdefault(job_id, threading.Lock())
+
+def write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+    os.replace(tmp, path)
+
+def read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+def creator_job_path(job_id):
+    return os.path.join(job_dir(job_id), "creator.json")
+
 def creator_job_new():
-    job_id = uuid.uuid4().hex
+    job_id = "creator_" + uuid.uuid4().hex
     job = {
-        "status": "queued",
-        "handle": "",
-        "sort_by": "latest",
-        "target": "10",
-        "target_count": 10,
-        "videos": [],
-        "loaded": 0,
-        "page": 0,
-        "credits_charged": 0,
-        "has_more": True,
-        "message": "Queued",
-        "error": None,
-        "created": time.time(),
-        "cancel_requested": False,
+        "status": "queued", "handle": "", "sort_by": "latest", "target": "10",
+        "target_count": 10, "videos": [], "loaded": 0, "page": 0,
+        "credits_charged": 0, "has_more": True, "message": "Queued",
+        "error": None, "created": time.time(), "cancel_requested": False,
     }
-    with CREATOR_JOBS_LOCK:
-        CREATOR_JOBS[job_id] = job
+    write_json(creator_job_path(job_id), job)
     return job_id
 
 def creator_job_update(job_id, **updates):
-    with CREATOR_JOBS_LOCK:
-        if job_id in CREATOR_JOBS:
-            CREATOR_JOBS[job_id].update(updates)
+    path = creator_job_path(job_id)
+    lock = job_lock(job_id)
+    with lock:
+        job = read_json(path)
+        if job is None:
+            return
+        job.update(updates)
+        write_json(path, job)
 
 def creator_job_get(job_id):
-    with CREATOR_JOBS_LOCK:
-        job = CREATOR_JOBS.get(job_id)
-        if not job:
-            return None
-        # Return a shallow copy; videos is intentionally shared as read-only here.
-        return dict(job)
+    return read_json(creator_job_path(job_id))
 
 def creator_job_cancelled(job_id):
-    with CREATOR_JOBS_LOCK:
-        return bool(CREATOR_JOBS.get(job_id, {}).get("cancel_requested"))
+    job = creator_job_get(job_id) or {}
+    return bool(job.get("cancel_requested"))
 
-def fetch_profile_page(params, retries=2):
-    last_error = None
-    for attempt in range(retries):
-        try:
-            return api_get("/v3/tiktok/profile/videos", require_key(), params)
-        except Exception as exc:
-            last_error = exc
-            text = str(exc)
-            # Retry transient upstream/server errors once with the next key.
-            if not any(code in text for code in ("HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504")):
-                break
-            time.sleep(0.75 * (attempt + 1))
-    raise last_error or RuntimeError("Profile video request failed")
-
-def creator_fetch_worker(job_id):
-    job = creator_job_get(job_id)
-    if not job:
-        return
-    handle = job["handle"]
-    sort_by = job["sort_by"]
-    region = job["region"]
-    target_count = job["target_count"]
-    cursor = None
-    page = 0
-    all_videos = []
-    credits = 0
+def cleanup_job_files():
+    cutoff = time.time() - JOB_TTL_SECONDS
     try:
-        creator_job_update(job_id, status="running", message="Fetching page 1…")
-        # A generous safety cap prevents an accidental infinite cursor loop while still
-        # allowing very large profiles to finish. "All" stops on has_more=false.
-        safety_max_pages = 2000
-        while page < safety_max_pages:
-            if creator_job_cancelled(job_id):
-                creator_job_update(job_id, status="cancelled", message=f"Stopped with {len(all_videos)} videos loaded.", videos=all_videos)
-                return
-            if target_count is not None and len(all_videos) >= target_count:
-                break
-
-            params = {"handle": handle, "sort_by": sort_by, "trim": "true"}
-            if region:
-                params["region"] = region
-            if cursor is not None:
-                params["max_cursor"] = str(cursor)
-
-            page_number = page + 1
-            creator_job_update(job_id, page=page_number, message=f"Fetching page {page_number}…")
-            try:
-                data = fetch_profile_page(params, retries=2)
-            except Exception as exc:
-                # Preserve all partial results instead of returning a generic 500.
-                creator_job_update(
-                    job_id,
-                    status="error",
-                    error=str(exc),
-                    message=f"Stopped on page {page_number}; {len(all_videos)} videos loaded.",
-                    videos=all_videos,
-                    loaded=len(all_videos),
-                    credits_charged=credits,
-                )
-                return
-
-            page += 1
-            credits += int(data.get("credits_charged") or 0)
-            batch = data.get("aweme_list") or []
-            before = len(all_videos)
-            for item in batch:
-                parsed = extract_profile_video(item, handle)
-                if parsed["url"]:
-                    all_videos.append(parsed)
-                    if target_count is not None and len(all_videos) >= target_count:
-                        break
-
-            creator_job_update(
-                job_id,
-                page=page,
-                loaded=len(all_videos),
-                credits_charged=credits,
-                has_more=bool(data.get("has_more")),
-                videos=all_videos,
-                message=f"Fetching page {page} · found {len(all_videos)} videos…",
-            )
-
-            if target_count is not None and len(all_videos) >= target_count:
-                break
-            if not data.get("has_more"):
-                break
-            next_cursor = data.get("max_cursor")
-            if next_cursor is None or str(next_cursor) == str(cursor):
-                break
-            cursor = next_cursor
-
-        complete = (target_count is not None and len(all_videos) >= target_count) or not creator_job_get(job_id).get("has_more")
-        creator_job_update(
-            job_id,
-            status="done",
-            videos=all_videos,
-            loaded=len(all_videos),
-            page=page,
-            credits_charged=credits,
-            complete=complete,
-            message=f"Finished. {len(all_videos)} videos loaded across {page} page(s).",
-        )
-    except Exception as exc:
-        creator_job_update(
-            job_id,
-            status="error",
-            error=str(exc),
-            videos=all_videos,
-            loaded=len(all_videos),
-            page=page,
-            credits_charged=credits,
-            message=f"Unexpected error after {len(all_videos)} videos.",
-        )
+        for name in os.listdir(JOB_ROOT):
+            path = os.path.join(JOB_ROOT, name)
+            if not os.path.isdir(path):
+                continue
+            state = read_json(os.path.join(path, "job.json")) or read_json(os.path.join(path, "creator.json"))
+            created = (state or {}).get("created", 0)
+            if created and created < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+                try:
+                    with JOB_LOCKS_LOCK:
+                        JOB_LOCKS.pop(name, None)
+                except Exception:
+                    pass
+    except OSError:
+        pass
 
 @app.post("/api/creator-jobs")
 def creator_job_start():
@@ -544,114 +465,33 @@ def download_to_file(url, destination):
                 if chunk:
                     fh.write(chunk)
 
+def bulk_job_path(job_id):
+    return os.path.join(job_dir(job_id), "job.json")
+
 def new_job():
-    job_id = uuid.uuid4().hex
+    job_id = "job_" + uuid.uuid4().hex
     job = {
-        "status": "queued",
-        "total": 0,
-        "done": 0,
-        "failed": 0,
-        "message": "Queued",
-        "file": None,
-        "created": time.time(),
-        "errors": [],
+        "status": "queued", "total": 0, "done": 0, "failed": 0,
+        "message": "Queued", "file": None, "created": time.time(), "errors": []
     }
-    with JOBS_LOCK:
-        JOBS[job_id] = job
+    write_json(bulk_job_path(job_id), job)
     return job_id
 
 def set_job(job_id, **updates):
-    with JOBS_LOCK:
-        if job_id in JOBS:
-            JOBS[job_id].update(updates)
+    path = bulk_job_path(job_id)
+    lock = job_lock(job_id)
+    with lock:
+        job = read_json(path)
+        if job is None:
+            return
+        job.update(updates)
+        write_json(path, job)
 
 def get_job(job_id):
-    with JOBS_LOCK:
-        return dict(JOBS.get(job_id) or {})
+    return read_json(bulk_job_path(job_id))
 
 def cleanup_jobs():
-    cutoff = time.time() - JOB_TTL_SECONDS
-    with JOBS_LOCK:
-        old_ids = [jid for jid, job in JOBS.items() if job.get("created", 0) < cutoff]
-        for jid in old_ids:
-            path = JOBS[jid].get("file")
-            if path:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            JOBS.pop(jid, None)
-
-def bulk_zip_worker(job_id, items, media_type):
-    temp_dir = tempfile.mkdtemp(prefix=f"tiktok_{job_id}_")
-    files = []
-    try:
-        total = len(items)
-        set_job(job_id, status="running", total=total, done=0, failed=0, message="Downloading…")
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {}
-            for idx, item in enumerate(items, 1):
-                url = item.get("audio_url") if media_type == "audio" else item.get("video_url")
-                if not url:
-                    set_job(job_id, failed=get_job(job_id).get("failed", 0) + 1)
-                    with JOBS_LOCK:
-                        JOBS[job_id]["errors"].append({
-                            "index": idx,
-                            "url": item.get("url", ""),
-                            "error": f"No {media_type} URL returned",
-                        })
-                    continue
-                ext = ".mp3" if media_type == "audio" else ".mp4"
-                name = clean_filename(item.get("title"), f"video_{idx}")
-                path = os.path.join(temp_dir, f"{idx:04d}_{name}{ext}")
-                futures[pool.submit(download_to_file, url, path)] = (idx, item.get("url", ""), path)
-
-            done = 0
-            failed = get_job(job_id).get("failed", 0)
-            for future in as_completed(futures):
-                idx, original_url, path = futures[future]
-                try:
-                    future.result()
-                    files.append((idx, path))
-                    done += 1
-                except Exception as exc:
-                    failed += 1
-                    with JOBS_LOCK:
-                        JOBS[job_id]["errors"].append({
-                            "index": idx,
-                            "url": original_url,
-                            "error": str(exc),
-                        })
-                set_job(job_id, done=done, failed=failed, message=f"Downloaded {done} / {total}")
-
-        files.sort(key=lambda x: x[0])
-        if not files:
-            raise RuntimeError("No media files could be downloaded.")
-
-        zip_path = os.path.join(tempfile.gettempdir(), f"tiktok_{job_id}_{media_type}.zip")
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for idx, path in files:
-                archive.write(path, arcname=os.path.basename(path))
-            errors = get_job(job_id).get("errors") or []
-            if errors:
-                archive.writestr(
-                    "download_errors.txt",
-                    "\n".join(
-                        f"Video {e['index']}: {e['url']} — {e['error']}"
-                        for e in errors
-                    ),
-                )
-
-        set_job(
-            job_id,
-            status="done",
-            file=zip_path,
-            message=f"Ready. {len(files)} downloaded, {len(get_job(job_id).get('errors') or [])} failed.",
-        )
-    except Exception as exc:
-        set_job(job_id, status="error", message=str(exc))
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    cleanup_job_files()
 
 @app.post("/api/bulk-download")
 def bulk_download():
@@ -661,31 +501,18 @@ def bulk_download():
     if media_type not in {"video", "audio"}:
         return jsonify(success=False, error="Invalid media type."), 400
 
+    # Direct-media path: the browser sends only the minimal fields needed for download.
     items = []
-    creator_job_id = (body.get("creator_job_id") or "").strip()
-
-    # Preferred large-creator path: send only selected indices. The actual
-    # video records are already stored in the creator background job.
-    if creator_job_id:
-        creator_job = creator_job_get(creator_job_id)
-        if not creator_job:
-            return jsonify(success=False, error="Creator load job is no longer available. Reload the creator videos."), 409
-
-        videos = creator_job.get("videos") or []
-        raw_indices = body.get("indices") or []
-        try:
-            indices = sorted({int(i) for i in raw_indices})
-        except Exception:
-            return jsonify(success=False, error="Invalid selected video indices."), 400
-
-        for i in indices:
-            if 0 <= i < len(videos):
-                items.append(videos[i])
-
-    # Direct-media compatibility path.
-    if not items:
-        items = [x for x in (body.get("items") or []) if x.get("success") is not False]
-
+    for x in (body.get("items") or []):
+        if x.get("success") is False:
+            continue
+        items.append({
+            "url": x.get("url", ""),
+            "title": x.get("title", ""),
+            "video_url": x.get("video_url", ""),
+            "audio_url": x.get("audio_url", ""),
+            "success": True,
+        })
     if not items:
         return jsonify(success=False, error="No downloadable videos were supplied."), 400
 
@@ -696,8 +523,7 @@ def bulk_download():
         daemon=True,
     )
     thread.start()
-    return jsonify(success=True, job_id=job_id, total=len(items),
-                   source="creator_job" if creator_job_id else "items")
+    return jsonify(success=True, job_id=job_id, total=len(items), source="items")
 
 @app.get("/api/jobs/<job_id>")
 def job_status(job_id):
