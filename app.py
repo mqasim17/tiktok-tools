@@ -39,6 +39,18 @@ os.makedirs(JOB_ROOT, exist_ok=True)
 JOB_TTL_SECONDS = 60 * 60
 JOB_LOCKS = {}
 JOB_LOCKS_LOCK = threading.Lock()
+SESSION_LOCAL = threading.local()
+
+def http_session():
+    session = getattr(SESSION_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16, max_retries=0)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        SESSION_LOCAL.session = session
+    return session
+
 
 def normalize_keys(raw):
     seen = set()
@@ -78,31 +90,73 @@ def require_key():
     return key
 
 def api_get(path, api_key, params):
-    response = requests.get(
-        BASE + path,
-        headers={"x-api-key": api_key},
-        params=params,
-        timeout=API_TIMEOUT,
-    )
-    try:
-        data = response.json()
-    except Exception:
-        data = {"success": False, "error": response.text or f"HTTP {response.status_code}"}
+    session = http_session()
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = session.get(
+                BASE + path,
+                headers={"x-api-key": api_key},
+                params=params,
+                timeout=API_TIMEOUT,
+            )
+            try:
+                data = response.json()
+            except Exception:
+                data = {"success": False, "error": (response.text or "")[:500]}
 
-    if not response.ok:
-        message = (
-            data.get("message")
-            or data.get("error")
-            or data.get("status_msg")
-            or f"API returned HTTP {response.status_code}"
-        )
-        raise RuntimeError(message)
+            if response.status_code in (429, 502, 503, 504) and attempt < 2:
+                time.sleep(0.5 * (2 ** attempt))
+                continue
 
-    if isinstance(data, dict) and data.get("success") is False:
-        raise RuntimeError(
-            data.get("status_msg") or data.get("message") or "Scrape Creators request failed"
-        )
-    return data
+            if not response.ok:
+                raise RuntimeError(
+                    data.get("message")
+                    or data.get("error")
+                    or data.get("status_msg")
+                    or f"API returned HTTP {response.status_code}"
+                )
+
+            if isinstance(data, dict) and data.get("success") is False:
+                raise RuntimeError(
+                    data.get("status_msg")
+                    or data.get("message")
+                    or data.get("error")
+                    or "Scrape Creators request failed"
+                )
+            return data
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.35 * (2 ** attempt))
+    raise RuntimeError(str(last_error) if last_error else "API request failed")
+
+def api_keys_from_request(body):
+    raw = body.get("keys") if isinstance(body, dict) else ""
+    if raw is not None and str(raw).strip():
+        set_api_keys(raw)
+    return key_count()
+
+def require_keys_from_request(body):
+    if api_keys_from_request(body) == 0:
+        raise RuntimeError("No API keys are loaded. Open API Keys and save at least one key.")
+
+def api_get_rotating(path, params):
+    with KEY_LOCK:
+        keys = list(API_KEYS)
+    if not keys:
+        raise RuntimeError("No API keys are loaded.")
+    last = None
+    for key in keys:
+        try:
+            return api_get(path, key, params)
+        except Exception as exc:
+            last = exc
+            msg = str(exc).lower()
+            if not any(t in msg for t in ("401","403","429","unauthorized","forbidden","rate limit","quota","invalid api")):
+                break
+    raise RuntimeError(str(last) if last else "API request failed")
+
 
 def first_url(obj):
     if isinstance(obj, dict):
@@ -242,7 +296,6 @@ def extract_video_info(data):
     }
 
 def get_video_info(url, transcript=False, region="", cache_age="30d"):
-    key = require_key()
     params = {
         "url": url,
         "get_transcript": "true" if transcript else "false",
@@ -251,8 +304,9 @@ def get_video_info(url, transcript=False, region="", cache_age="30d"):
     }
     if region:
         params["region"] = region
-    data = api_get("/v2/tiktok/video", key, params)
+    data = api_get_rotating("/v2/tiktok/video", params)
     return extract_video_info(data)
+
 
 @app.get("/")
 def index():
@@ -376,7 +430,7 @@ def creator_fetch_worker(job_id):
             page += 1
             creator_job_update(job_id, page=page, message=f"Fetching page {page}…")
             try:
-                data = api_get("/v3/tiktok/profile/videos", require_key(), params)
+                data = api_get_rotating("/v3/tiktok/profile/videos", params)
             except Exception as exc:
                 # Preserve partial results so the user can still download what was found.
                 creator_job_update(
@@ -448,8 +502,10 @@ def creator_job_start():
         except Exception:
             return jsonify(success=False, error="Invalid video count."), 400
     # Fail fast if no key is loaded; otherwise the background job would just error later.
-    if key_count() == 0:
-        return jsonify(success=False, error="No API keys are loaded. Open API Keys and save at least one key."), 400
+    try:
+        require_keys_from_request(body)
+    except Exception as exc:
+        return jsonify(success=False, error=str(exc)), 400
 
     job_id = creator_job_new()
     creator_job_update(job_id, handle=handle, sort_by=sort_by, region=region, target=target, target_count=target_count)
@@ -481,73 +537,95 @@ def creator_videos_legacy():
 @app.post("/api/transcripts")
 def bulk_transcripts():
     body = request.get_json(silent=True) or {}
+    try:
+        require_keys_from_request(body)
+    except Exception as exc:
+        return jsonify(success=False, error=str(exc)), 400
+
     links = parse_links(body.get("links") or "")
     region = (body.get("region") or "").strip()
     cache_age = (body.get("cache_age") or "30d").strip()
     if not links:
         return jsonify(success=False, error="Paste at least one TikTok URL."), 400
 
-    results, charged = [], 0
-    for idx, url in enumerate(links, 1):
+    results = [None] * len(links)
+    charged = 0
+
+    def one(index, url):
         try:
             info = get_video_info(url, transcript=True, region=region, cache_age=cache_age)
             credits = int(info.get("credits_charged") or 0)
-            charged += credits
-            results.append({
-                "index": idx,
-                "url": url,
-                "success": True,
-                "title": info["title"],
-                "duration": info["duration"],
-                "transcript": info["transcript"],
-                "cached": info["cached"],
+            return index, {
+                "index": index, "url": url, "success": True,
+                "title": info["title"], "duration": info["duration"],
+                "transcript": info["transcript"], "cached": info["cached"],
                 "credits_charged": credits,
-            })
-        except Exception as e:
-            results.append({"index": idx, "url": url, "success": False, "error": str(e)})
+            }, credits
+        except Exception as exc:
+            return index, {"index": index, "url": url, "success": False, "error": str(exc)}, 0
+
+    with ThreadPoolExecutor(max_workers=min(8, len(links))) as pool:
+        futures = [pool.submit(one, i, u) for i, u in enumerate(links, 1)]
+        for fut in as_completed(futures):
+            idx, item, credits = fut.result()
+            results[idx - 1] = item
+            charged += credits
+
     return jsonify(success=True, results=results, credits_charged=charged)
 
-@app.post("/api/media-info")
+
 def bulk_media_info():
     body = request.get_json(silent=True) or {}
+    try:
+        require_keys_from_request(body)
+    except Exception as exc:
+        return jsonify(success=False, error=str(exc)), 400
+
     links = parse_links(body.get("links") or "")
     region = (body.get("region") or "").strip()
     cache_age = (body.get("cache_age") or "30d").strip()
     if not links:
         return jsonify(success=False, error="Paste at least one TikTok URL."), 400
 
-    results, charged = [], 0
-    for idx, url in enumerate(links, 1):
+    results = [None] * len(links)
+    charged = 0
+
+    def one(index, url):
         try:
             info = get_video_info(url, transcript=False, region=region, cache_age=cache_age)
             credits = int(info.get("credits_charged") or 0)
+            return index, {
+                "index": index, "url": url, "success": True,
+                "title": info["title"], "duration": info["duration"],
+                "video_url": info["video_url"], "audio_url": info["audio_url"],
+                "cached": info["cached"], "credits_charged": credits,
+            }, credits
+        except Exception as exc:
+            return index, {"index": index, "url": url, "success": False, "error": str(exc)}, 0
+
+    with ThreadPoolExecutor(max_workers=min(8, len(links))) as pool:
+        futures = [pool.submit(one, i, u) for i, u in enumerate(links, 1)]
+        for fut in as_completed(futures):
+            idx, item, credits = fut.result()
+            results[idx - 1] = item
             charged += credits
-            results.append({
-                "index": idx,
-                "url": url,
-                "success": True,
-                "title": info["title"],
-                "duration": info["duration"],
-                "video_url": info["video_url"],
-                "audio_url": info["audio_url"],
-                "cached": info["cached"],
-                "credits_charged": credits,
-            })
-        except Exception as e:
-            results.append({"index": idx, "url": url, "success": False, "error": str(e)})
+
     return jsonify(success=True, results=results, credits_charged=charged)
+
 
 def clean_filename(text, fallback):
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", text or "").strip("._-")
     return (name[:90] or fallback)
 
 def download_to_file(url, destination):
-    with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
+    session = http_session()
+    with session.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
         response.raise_for_status()
         with open(destination, "wb") as fh:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     fh.write(chunk)
+
 
 def bulk_job_path(job_id):
     return os.path.join(job_dir(job_id), "job.json")
@@ -576,6 +654,61 @@ def get_job(job_id):
 
 def cleanup_jobs():
     cleanup_job_files()
+
+
+def bulk_zip_worker(job_id, items, media_type):
+    temp_dir = tempfile.mkdtemp(prefix=f"tiktok_zip_{job_id}_")
+    files, errors = [], []
+    try:
+        total = len(items)
+        set_job(job_id, status="running", total=total, done=0, failed=0,
+                message=f"Downloading 0 / {total}…")
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=min(8, max(1, total))) as pool:
+            for idx, item in enumerate(items, 1):
+                url = (item.get("audio_url") if media_type == "audio" else item.get("video_url") or "").strip()
+                if not url:
+                    errors.append({"index": idx, "url": item.get("url",""), "error": f"No {media_type} URL returned"})
+                    continue
+                ext = ".mp3" if media_type == "audio" else ".mp4"
+                filename = f"{idx:04d}_{clean_filename(item.get('title'), f'video_{idx}')}{ext}"
+                path = os.path.join(temp_dir, filename)
+                futures[pool.submit(download_to_file, url, path)] = (idx, filename, path, item.get("url",""))
+
+            done = 0
+            for fut in as_completed(futures):
+                idx, filename, path, original_url = futures[fut]
+                try:
+                    fut.result()
+                    files.append((idx, filename, path))
+                    done += 1
+                except Exception as exc:
+                    errors.append({"index": idx, "url": original_url, "error": str(exc)})
+                set_job(job_id, done=done, failed=len(errors), message=f"Downloaded {done} / {total}…")
+
+        if not files:
+            set_job(job_id, status="error", done=0, failed=len(errors), errors=errors,
+                    message="No media files could be downloaded.")
+            return
+
+        files.sort(key=lambda x: x[0])
+        zip_path = os.path.join(tempfile.gettempdir(), f"{job_id}_{media_type}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for _, filename, path in files:
+                archive.write(path, arcname=filename)
+            if errors:
+                archive.writestr("download_errors.txt",
+                                 "\n".join(f"Video {e['index']}: {e['url']} — {e['error']}" for e in errors))
+
+        set_job(job_id, status="done", done=len(files), failed=len(errors), errors=errors,
+                file=zip_path, message=f"ZIP ready: {len(files)} downloaded, {len(errors)} failed.")
+    except Exception as exc:
+        set_job(job_id, status="error", done=len(files), failed=len(errors), errors=errors,
+                message=f"ZIP worker failed: {exc}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 @app.post("/api/bulk-download")
 def bulk_download():

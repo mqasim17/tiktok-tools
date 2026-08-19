@@ -7,3 +7,14 @@ Fixes:
 - Browser JSON parsing reports HTML/proxy responses clearly.
 - Background creator loading and ZIP jobs remain progressive.
 - API keys remain browser-persisted via localStorage.
+
+
+v10 fix: added the missing background bulk ZIP worker. ZIP downloads use up to 8 concurrent media downloads and write a low-compression ZIP for faster completion.
+
+v11 final:
+- Media/transcript preparation uses up to 8 concurrent Video Info requests.
+- API keys are remembered in browser localStorage and automatically sent with every request, eliminating post-restart key races.
+- Creator pagination remains cursor-safe and backgrounded.
+- Bulk media uses up to 8 concurrent downloads with reusable HTTP sessions.
+- ZIP is ZIP_STORED for maximum speed because MP4/MP3 are already compressed.
+- API routes always return JSON errors for /api/* paths.
