@@ -122,9 +122,13 @@ let creatorVideos=[], transcriptData=[], mediaData=[];
 
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
 function status(id,msg,cls=''){ $(id).innerHTML=`<span class="${cls}">${esc(msg)}</span>`; }
-function common(){return {region:'US',cache_age:'30d'};}
+let keysReadyPromise=Promise.resolve();
+function savedKeys(){return localStorage.getItem('tiktok_scrape_creator_keys')||'';}
+function common(){return {region:'US',cache_age:'30d',keys:savedKeys()};}
 async function jsonFetch(url,body){
-  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),cache:'no-store'});
+  await keysReadyPromise;
+  const payload={...body,keys:savedKeys()};
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
   const text=await r.text();
   let d=null;
   try{d=JSON.parse(text)}catch{
@@ -139,22 +143,28 @@ document.querySelectorAll('.tab').forEach(x=>x.onclick=()=>showPanel(x.dataset.p
 
 async function refreshKeyStatus(){try{const d=await fetch('/api/keys/status').then(r=>r.json());$('keyCount').textContent=`${d.count||0} keys loaded`;}catch{}}
 function restoreLocalKeys(){
-  const saved=localStorage.getItem('tiktok_scrape_creator_keys')||'';
-  if(saved){
-    $('apiKeys').value=saved;
-    fetch('/api/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys:saved})}).then(()=>refreshKeyStatus()).catch(()=>{});
-  } else refreshKeyStatus();
+  const saved=savedKeys();
+  $('apiKeys').value=saved;
+  keysReadyPromise=(async()=>{
+    try{
+      const r=await fetch('/api/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys:saved}),cache:'no-store'});
+      const d=await r.json();
+      $('keyCount').textContent=`${d.count||0} keys loaded`;
+    }catch{ await refreshKeyStatus(); }
+  })();
+  return keysReadyPromise;
 }
 $('saveKeys').onclick=async()=>{
   const keys=$('apiKeys').value.trim();
   if(!keys){status('keyStatus','Enter at least one API key.','bad');return}
   localStorage.setItem('tiktok_scrape_creator_keys',keys);
+  keysReadyPromise=Promise.resolve();
   try{const d=await jsonFetch('/api/keys',{keys});$('keyCount').textContent=`${d.count} keys loaded`;status('keyStatus',`Saved ${d.count} API keys. They will be restored automatically on this browser.`,'good');}
   catch(e){status('keyStatus',`Browser copy saved, but server could not load them: ${e.message}`,'bad')}
 };
 $('clearKeys').onclick=async()=>{localStorage.removeItem('tiktok_scrape_creator_keys');$('apiKeys').value='';try{const d=await jsonFetch('/api/keys',{keys:''});$('keyCount').textContent=`${d.count||0} keys loaded`;}catch{}status('keyStatus','Keys forgotten from this browser and cleared from the current server instance.','good')};
 $('apiKeys').addEventListener('input',()=>localStorage.setItem('tiktok_scrape_creator_keys',$('apiKeys').value));
-restoreLocalKeys();
+keysReadyPromise=restoreLocalKeys();
 
 function setBar(id,percent){$(id).style.width=Math.max(0,Math.min(100,percent))+'%';}
 
@@ -342,7 +352,7 @@ $('clearTranscript').onclick=()=>{$('transcriptLinks').value='';transcriptData=[
 
 $('mediaPrepare').onclick=async()=>{
   const links=$('mediaLinks').value.trim();if(!links){status('mediaStatus','Paste at least one TikTok URL.','bad');return}
-  const b=$('mediaPrepare');b.disabled=true;b.textContent='Preparing…';$('mediaResults').innerHTML='';status('mediaStatus','Preparing media URLs. This makes one Video Info request per unique link…');
+  const b=$('mediaPrepare');b.disabled=true;b.textContent='Preparing…';$('mediaResults').innerHTML='';status('mediaStatus',`Preparing ${links.split(/\s+/).filter(Boolean).length} media URL(s) concurrently…`);
   try{const d=await jsonFetch('/api/media-info',{...common(),links});mediaData=d.results||[];renderMedia();status('mediaStatus',`Prepared ${mediaData.length} link(s). Credits charged: ${d.credits_charged}.`,'good')}
   catch(e){status('mediaStatus',e.message,'bad')}finally{b.disabled=false;b.textContent='Prepare Downloads'}
 };
