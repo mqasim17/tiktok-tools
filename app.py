@@ -788,11 +788,8 @@ def direct_download():
     if media_type not in {"video", "audio"}:
         return jsonify(success=False, error="Invalid media type."), 400
     try:
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower()
-        allowed = host.endswith("tiktokcdn.com") or host.endswith("tiktokv.com") or host.endswith("tiktokv.eu")
-        if not allowed:
-            return jsonify(success=False, error="The media URL is not a TikTok CDN URL."), 400
+        if not is_trusted_tiktok_media_url(url):
+            return jsonify(success=False, error="Unsupported TikTok media host returned by the API."), 400
 
         response = http_session().get(url, stream=True, timeout=DOWNLOAD_TIMEOUT)
         response.raise_for_status()
@@ -822,17 +819,42 @@ def direct_download():
             pass
         return jsonify(success=False, error=f"Direct download failed: {exc}"), 502
 
+
+def is_trusted_tiktok_media_url(url):
+    """Allow known TikTok media/CDN host families returned by Scrape Creators."""
+    try:
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme != "https":
+            return False
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+
+    allowed_domains = (
+        # TikTok CDN families
+        "tiktokcdn.com",
+        "tiktokcdn-us.com",
+        "tiktokcdn-eu.com",
+        "tiktokcdn-in.com",
+        # TikTok video/API delivery domains
+        "tiktokv.com",
+        "tiktokv.eu",
+        "tiktokv.us",
+        # Music/media delivery families that can carry audio URLs
+        "muscdn.com",
+        "ttcdn-us.com",
+        "ttlivecdn.com",
+    )
+    return any(host == d or host.endswith("." + d) for d in allowed_domains)
+
 @app.post("/api/proxy-download")
 def proxy_download():
     body = request.get_json(silent=True) or {}
     url = (body.get("media_url") or "").strip()
     media_type = body.get("media_type") or "video"
     filename = clean_filename(body.get("filename"), "tiktok")
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    allowed = host.endswith("tiktokcdn.com") or host.endswith("tiktokv.com") or host.endswith("tiktokv.eu")
-    if not url or not allowed:
-        return jsonify(success=False, error="Invalid or unsupported TikTok media URL."), 400
+    if not url or not is_trusted_tiktok_media_url(url):
+        return jsonify(success=False, error="Unsupported TikTok media host returned by the API."), 400
     try:
         response = http_session().get(url, stream=True, timeout=DOWNLOAD_TIMEOUT)
         response.raise_for_status()

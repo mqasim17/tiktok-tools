@@ -22,3 +22,5 @@ v11 final:
 v12 fix: restored the Flask @app.post('/api/media-info') route decorator. The Media Downloader Prepare Downloads endpoint now maps to the existing concurrent media-info handler.
 
 v13: Media Downloader improvements. The media-info call now requests an untrimmed Video Info response so the documented `added_sound_music_info.play_url` audio URL is retained. Direct native download links were added for individual video/audio files, using a streaming TikTok-CDN proxy so files do not need to be buffered in the browser. ZIP downloads remain available for batches.
+
+v14 fix: media URL validation now accepts the TikTok CDN families actually returned by Scrape Creators, including tiktokcdn-us.com, tiktokcdn-eu.com, tiktokcdn-in.com, tiktokcdn.com, tiktokv.eu, tiktokv.us, tiktokv.com, and known TikTok media delivery families.
