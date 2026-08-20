@@ -109,6 +109,7 @@ https://www.tiktok.com/@user/video/456..."></textarea></div>
       <div style="margin-top:13px"><label>TikTok video links — one per line</label><textarea id="mediaLinks" placeholder="https://www.tiktok.com/@user/video/123...
 https://www.tiktok.com/@user/video/456..."></textarea></div>
       <div class="actions"><button class="btn" id="mediaPrepare">Prepare Downloads</button><button class="btn alt" id="downloadAudioZip">Download all audio ZIP</button><button class="btn alt" id="downloadVideoZip">Download all video ZIP</button><button class="btn alt" id="clearMedia">Clear</button></div>
+      <div class="note" style="margin-top:8px">Each prepared video also gets direct <b>Video</b> and <b>Audio</b> download links. These download the file directly and do not require a ZIP. For multiple files, use the individual buttons; browsers may block an automatic burst of many downloads.</div>
       <div id="mediaStatus" class="status"></div>
       <div id="mediaProgress" class="progress hidden"><div class="bar" id="mediaBar"></div></div>
       <div id="mediaResults"></div>
@@ -353,17 +354,23 @@ $('clearTranscript').onclick=()=>{$('transcriptLinks').value='';transcriptData=[
 $('mediaPrepare').onclick=async()=>{
   const links=$('mediaLinks').value.trim();if(!links){status('mediaStatus','Paste at least one TikTok URL.','bad');return}
   const b=$('mediaPrepare');b.disabled=true;b.textContent='Preparing…';$('mediaResults').innerHTML='';status('mediaStatus',`Preparing ${links.split(/\s+/).filter(Boolean).length} media URL(s) concurrently…`);
-  try{const d=await jsonFetch('/api/media-info',{...common(),links});mediaData=d.results||[];renderMedia();status('mediaStatus',`Prepared ${mediaData.length} link(s). Credits charged: ${d.credits_charged}.`,'good')}
+  try{const d=await jsonFetch('/api/media-info',{...common(),links});mediaData=d.results||[];renderMedia();status('mediaStatus',`Prepared ${mediaData.length} link(s). Credits charged: ${d.credits_charged}. Direct Video/Audio links are ready below.`,'good')}
   catch(e){status('mediaStatus',e.message,'bad')}finally{b.disabled=false;b.textContent='Prepare Downloads'}
 };
+function directUrl(item,type){
+  const url=type==='audio'?item.audio_url:item.video_url;
+  if(!url)return '';
+  const safe=(item.title||`video_${item.index}`).replace(/[^A-Za-z0-9._-]+/g,'_').slice(0,80)||`video_${item.index}`;
+  const filename=`${String(item.index).padStart(2,'0')}_${safe}.${type==='audio'?'mp3':'mp4'}`;
+  return `/api/direct-download?type=${type}&filename=${encodeURIComponent(filename)}&url=${encodeURIComponent(url)}`;
+}
 function renderMedia(){
-  $('mediaResults').innerHTML=mediaData.map(x=>x.success?`<article class="result"><div class="row"><div><h3>Video ${x.index} — ${esc(x.title)}</h3><div class="meta">Duration: ${esc(x.duration||'Unavailable')} · ${x.cached?'Cached · 0 credits':`API request · ${Number(x.credits_charged)||1} credit`}</div></div><div class="actions" style="margin:0"><button class="btn alt mediaOne" data-i="${x.index}" data-type="audio" ${x.audio_url?'':'disabled'}>Audio</button><button class="btn alt mediaOne" data-i="${x.index}" data-type="video" ${x.video_url?'':'disabled'}>Video</button></div></div></article>`:`<article class="result"><div class="bad">${esc(x.error)}</div></article>`).join('')||'<div class="empty">Prepare downloads to see results.</div>';
-  document.querySelectorAll('.mediaOne').forEach(b=>b.onclick=()=>downloadSingleMedia(Number(b.dataset.i),b.dataset.type));
+  $('mediaResults').innerHTML=mediaData.map(x=>x.success?`<article class="result"><div class="row"><div><h3>Video ${x.index} — ${esc(x.title)}</h3><div class="meta">Duration: ${esc(x.duration||'Unavailable')} · ${x.cached?'Cached · 0 credits':`API request · ${Number(x.credits_charged)||1} credit`}</div></div><div class="actions" style="margin:0"><a class="btn alt" href="${directUrl(x,'audio')}" ${x.audio_url?'':'aria-disabled="true" style="pointer-events:none;opacity:.45"'}>⬇ Audio</a><a class="btn alt" href="${directUrl(x,'video')}" ${x.video_url?'':'aria-disabled="true" style="pointer-events:none;opacity:.45"'}>⬇ Video</a></div></div><div class="meta url">${esc(x.url)}</div></article>`:`<article class="result"><div class="bad">${esc(x.error)}</div></article>`).join('')||'<div class="empty">Prepare downloads to see results.</div>';
 }
 async function downloadSingleMedia(index,type){
-  const item=mediaData.find(x=>x.index===index);if(!item)return;const url=type==='audio'?item.audio_url:item.video_url;if(!url){status('mediaStatus',`No ${type} URL returned.`,'bad');return}
-  const safe=(item.title||`video_${index}`).replace(/[^A-Za-z0-9._-]+/g,'_').slice(0,80)||`video_${index}`;status('mediaStatus',`Downloading ${type} for Video ${index}…`);
-  try{const r=await fetch('/api/proxy-download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({media_url:url,media_type:type,filename:`${String(index).padStart(2,'0')}_${safe}.${type==='audio'?'mp3':'mp4'}`})});if(!r.ok){let d={};try{d=await r.json()}catch{};throw new Error(d.error||'Download failed')}saveBlob(await r.blob(),`${safe}.${type==='audio'?'mp3':'mp4'}`);status('mediaStatus',`Video ${index} ${type} download started.`,'good')}catch(e){status('mediaStatus',e.message,'bad')}
+  const item=mediaData.find(x=>x.index===index); if(!item)return;
+  const u=directUrl(item,type); if(!u){status('mediaStatus',`No ${type} URL returned.`,'bad');return;}
+  window.location.href=u;
 }
 async function downloadMediaZip(type){
   const items=mediaData.filter(x=>x.success);if(!items.length){status('mediaStatus','Prepare downloads first.','bad');return}
