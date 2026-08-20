@@ -295,11 +295,11 @@ def extract_video_info(data):
         "credits_charged": data.get("credits_charged"),
     }
 
-def get_video_info(url, transcript=False, region="", cache_age="30d"):
+def get_video_info(url, transcript=False, region="", cache_age="30d", trim=None):
     params = {
         "url": url,
         "get_transcript": "true" if transcript else "false",
-        "trim": "true",
+        "trim": "true" if (trim is True or trim is None and transcript) else "false",
         "cache_max_age": cache_age,
     }
     if region:
@@ -593,7 +593,7 @@ def bulk_media_info():
 
     def one(index, url):
         try:
-            info = get_video_info(url, transcript=False, region=region, cache_age=cache_age)
+            info = get_video_info(url, transcript=False, region=region, cache_age=cache_age, trim=False)
             credits = int(info.get("credits_charged") or 0)
             return index, {
                 "index": index, "url": url, "success": True,
@@ -780,24 +780,72 @@ def export_links():
             links.append(url)
     return Response("\n".join(links) + ("\n" if links else ""), mimetype="text/plain")
 
+@app.get("/api/direct-download")
+def direct_download():
+    url = (request.args.get("url") or "").strip()
+    media_type = (request.args.get("type") or "video").strip().lower()
+    filename = clean_filename(request.args.get("filename") or "tiktok", "tiktok")
+    if media_type not in {"video", "audio"}:
+        return jsonify(success=False, error="Invalid media type."), 400
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        allowed = host.endswith("tiktokcdn.com") or host.endswith("tiktokv.com") or host.endswith("tiktokv.eu")
+        if not allowed:
+            return jsonify(success=False, error="The media URL is not a TikTok CDN URL."), 400
+
+        response = http_session().get(url, stream=True, timeout=DOWNLOAD_TIMEOUT)
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type") or ("audio/mpeg" if media_type == "audio" else "video/mp4")
+        if media_type == "audio" and not filename.lower().endswith(".mp3"):
+            filename += ".mp3"
+        if media_type == "video" and not filename.lower().endswith(".mp4"):
+            filename += ".mp4"
+
+        def generate():
+            try:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                response.close()
+
+        return Response(
+            generate(),
+            mimetype=content_type.split(";")[0],
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as exc:
+        try:
+            response.close()
+        except Exception:
+            pass
+        return jsonify(success=False, error=f"Direct download failed: {exc}"), 502
+
 @app.post("/api/proxy-download")
 def proxy_download():
     body = request.get_json(silent=True) or {}
     url = (body.get("media_url") or "").strip()
     media_type = body.get("media_type") or "video"
     filename = clean_filename(body.get("filename"), "tiktok")
-    if not url.startswith(("https://", "http://")):
-        return jsonify(success=False, error="Invalid media URL."), 400
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    allowed = host.endswith("tiktokcdn.com") or host.endswith("tiktokv.com") or host.endswith("tiktokv.eu")
+    if not url or not allowed:
+        return jsonify(success=False, error="Invalid or unsupported TikTok media URL."), 400
     try:
-        with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
-            response.raise_for_status()
-            content = response.content
-        mimetype = "audio/mpeg" if media_type == "audio" else "video/mp4"
-        return Response(
-            content,
-            mimetype=mimetype,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
+        response = http_session().get(url, stream=True, timeout=DOWNLOAD_TIMEOUT)
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type") or ("audio/mpeg" if media_type == "audio" else "video/mp4")
+        def generate():
+            try:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                response.close()
+        return Response(generate(), mimetype=content_type.split(";")[0],
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     except Exception as exc:
         return jsonify(success=False, error=f"Media download failed: {exc}"), 502
 
