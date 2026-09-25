@@ -24,3 +24,7 @@ v12 fix: restored the Flask @app.post('/api/media-info') route decorator. The Me
 v13: Media Downloader improvements. The media-info call now requests an untrimmed Video Info response so the documented `added_sound_music_info.play_url` audio URL is retained. Direct native download links were added for individual video/audio files, using a streaming TikTok-CDN proxy so files do not need to be buffered in the browser. ZIP downloads remain available for batches.
 
 v14 fix: media URL validation now accepts the TikTok CDN families actually returned by Scrape Creators, including tiktokcdn-us.com, tiktokcdn-eu.com, tiktokcdn-in.com, tiktokcdn.com, tiktokv.eu, tiktokv.us, tiktokv.com, and known TikTok media delivery families.
+
+v15 addition: Video Research tab. One Video Info request (with transcript) supplies title, duration, and engagement statistics; the Comments endpoint is paginated and costs 1 credit per request. The research job runs in the background and can collect all available top-level comments or a selected limit, with TXT/JSON exports. Comment replies are not fetched in this version because the API documents them as a separate 1-credit-per-request endpoint per comment thread.
+
+v16: research polling is lightweight; full comments/transcripts/statistics are returned only once at job completion. Research copy/export helpers are isolated from existing tools.

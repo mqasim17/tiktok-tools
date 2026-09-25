@@ -382,6 +382,168 @@ def creator_job_cancelled(job_id):
     job = creator_job_get(job_id) or {}
     return bool(job.get("cancel_requested"))
 
+
+def research_job_path(job_id):
+    return os.path.join(job_dir(job_id), "research.json")
+
+def research_job_new(links, comment_mode="all", max_comments=None):
+    job_id = "research_" + uuid.uuid4().hex
+    job = {
+        "status": "queued",
+        "links": links,
+        "total": len(links),
+        "done": 0,
+        "failed": 0,
+        "comment_mode": comment_mode,
+        "max_comments": max_comments,
+        "results": [None] * len(links),
+        "credits_charged": 0,
+        "message": "Queued",
+        "error": None,
+        "created": time.time(),
+    }
+    write_json(research_job_path(job_id), job)
+    return job_id
+
+def research_job_get(job_id):
+    return read_json(research_job_path(job_id))
+
+def research_job_update(job_id, **updates):
+    path = research_job_path(job_id)
+    lock = job_lock(job_id)
+    with lock:
+        job = read_json(path)
+        if job is None:
+            return
+        job.update(updates)
+        write_json(path, job)
+
+def compact_comment(comment):
+    user = comment.get("user") or {}
+    return {
+        "cid": str(comment.get("cid") or ""),
+        "text": comment.get("text") or "",
+        "likes": int(comment.get("digg_count") or 0),
+        "create_time": comment.get("create_time"),
+        "author": user.get("unique_id") or user.get("nickname") or "",
+        "author_nickname": user.get("nickname") or "",
+        "reply_count": int(comment.get("reply_comment_total") or 0),
+    }
+
+def extract_research_video_info(data):
+    aweme = data.get("aweme_detail") or {}
+    video = aweme.get("video") or {}
+    stats = aweme.get("statistics") or {}
+    return {
+        "id": str(aweme.get("aweme_id") or data.get("id") or ""),
+        "url": data.get("url") or aweme.get("share_url") or "",
+        "title": (aweme.get("desc") or "Untitled TikTok").strip(),
+        "duration": fmt_seconds(video.get("duration") or 0),
+        "transcript": clean_vtt(data.get("transcript") or ""),
+        "views": int(stats.get("play_count") or 0),
+        "likes": int(stats.get("digg_count") or 0),
+        "comments_count": int(stats.get("comment_count") or 0),
+        "shares": int(stats.get("share_count") or 0),
+        "saves": int(stats.get("collect_count") or 0),
+        "downloads": int(stats.get("download_count") or 0),
+        "reposts": int(stats.get("repost_count") or 0),
+        "cached": bool(data.get("cached")),
+        "credits_charged": int(data.get("credits_charged") or 0),
+    }
+
+def fetch_all_comments(url, max_comments=None):
+    comments = []
+    cursor = None
+    pages = 0
+    charged = 0
+    total_reported = None
+    has_more = True
+    while has_more:
+        params = {"url": url, "trim": "true"}
+        if cursor is not None:
+            params["cursor"] = cursor
+        data = api_get_rotating("/v1/tiktok/video/comments", params)
+        pages += 1
+        charged += int(data.get("credits_charged") or 0)
+        total_reported = data.get("total", total_reported)
+        batch = data.get("comments") or []
+        for c in batch:
+            comments.append(compact_comment(c))
+            if max_comments is not None and len(comments) >= max_comments:
+                return comments[:max_comments], pages, charged, total_reported, True
+        has_more = bool(data.get("has_more"))
+        next_cursor = data.get("cursor")
+        if not has_more or next_cursor is None or str(next_cursor) == str(cursor):
+            break
+        cursor = next_cursor
+    return comments, pages, charged, total_reported, False
+
+def research_video_worker(index, url, max_comments):
+    # One Video Info call gives title, duration, transcript and engagement stats.
+    info_data = api_get_rotating("/v2/tiktok/video", {
+        "url": url,
+        "get_transcript": "true",
+        "trim": "false",
+        "cache_max_age": "30d",
+        "region": "US",
+    })
+    info = extract_research_video_info(info_data)
+    comments, comment_pages, comment_credits, total_comments, limited = fetch_all_comments(url, max_comments)
+    info["comments"] = comments
+    info["comments_fetched"] = len(comments)
+    info["comments_total_reported"] = total_comments
+    info["comment_pages"] = comment_pages
+    info["comments_limited"] = limited
+    info["credits_charged"] = int(info["credits_charged"]) + comment_credits
+    return info
+
+def video_research_worker(job_id):
+    job = research_job_get(job_id)
+    if not job: return
+    links = job.get("links") or []
+    max_comments = job.get("max_comments")
+    results = [None] * len(links)
+    done = 0
+    failed = 0
+    credits = 0
+    research_job_update(job_id, status="running", message=f"Researching 0 / {len(links)}…")
+
+    def one(item):
+        idx, url = item
+        try:
+            return idx, research_video_worker(idx, url, max_comments), None
+        except Exception as exc:
+            return idx, {"url": url, "success": False, "error": str(exc)}, str(exc)
+
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(links)))) as pool:
+        futures = [pool.submit(one, (i, url)) for i, url in enumerate(links)]
+        for fut in as_completed(futures):
+            idx, result, error = fut.result()
+            results[idx] = result
+            if error:
+                failed += 1
+            else:
+                done += 1
+                credits += int(result.get("credits_charged") or 0)
+            research_job_update(
+                job_id,
+                results=results,
+                done=done,
+                failed=failed,
+                credits_charged=credits,
+                message=f"Finished {done + failed} / {len(links)}…",
+            )
+
+    research_job_update(
+        job_id,
+        status="done",
+        results=results,
+        done=done,
+        failed=failed,
+        credits_charged=credits,
+        message=f"Research complete: {done} succeeded, {failed} failed.",
+    )
+
 def cleanup_job_files():
     cutoff = time.time() - JOB_TTL_SECONDS
     try:
@@ -389,7 +551,9 @@ def cleanup_job_files():
             path = os.path.join(JOB_ROOT, name)
             if not os.path.isdir(path):
                 continue
-            state = read_json(os.path.join(path, "job.json")) or read_json(os.path.join(path, "creator.json"))
+            state = (read_json(os.path.join(path, "job.json"))
+                     or read_json(os.path.join(path, "creator.json"))
+                     or read_json(os.path.join(path, "research.json")))
             created = (state or {}).get("created", 0)
             if created and created < cutoff:
                 shutil.rmtree(path, ignore_errors=True)
@@ -526,6 +690,43 @@ def creator_job_cancel(job_id):
         return jsonify(success=False, error="Creator job not found or expired."), 404
     creator_job_update(job_id, cancel_requested=True)
     return jsonify(success=True)
+
+
+@app.post("/api/research-jobs")
+def research_job_start():
+    body = request.get_json(silent=True) or {}
+    try:
+        require_keys_from_request(body)
+    except Exception as exc:
+        return jsonify(success=False, error=str(exc)), 400
+    links = parse_links(body.get("links") or "")
+    if not links:
+        return jsonify(success=False, error="Paste at least one TikTok video URL."), 400
+    raw_limit = body.get("max_comments")
+    if raw_limit in (None, "", "all"):
+        max_comments = None
+    else:
+        try:
+            max_comments = max(1, min(int(raw_limit), 100000))
+        except Exception:
+            return jsonify(success=False, error="Invalid comments limit."), 400
+
+    job_id = research_job_new(links, comment_mode="all" if max_comments is None else "limited", max_comments=max_comments)
+    threading.Thread(target=video_research_worker, args=(job_id,), daemon=True).start()
+    return jsonify(success=True, job_id=job_id, total=len(links), max_comments=max_comments)
+
+@app.get("/api/research-jobs/<job_id>")
+def research_job_status(job_id):
+    job = research_job_get(job_id)
+    if not job:
+        return jsonify(success=False, error="Research job not found or expired."), 404
+    include_results = request.args.get("include_results") == "1"
+    payload = {k: v for k, v in job.items() if k != "results"}
+    results = job.get("results") or []
+    payload["result_count"] = sum(1 for x in results if x)
+    if include_results:
+        payload["results"] = results
+    return jsonify(success=True, **payload)
 
 @app.post("/api/videos")
 def creator_videos_legacy():
