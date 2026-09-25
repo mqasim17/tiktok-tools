@@ -32,6 +32,7 @@ select{cursor:pointer}.count-grid{display:grid;grid-template-columns:1fr 1fr;gap
   <div class="nav">
     <button class="tab active" data-panel="creator">👤 Creator Videos</button>
     <button class="tab" data-panel="transcripts">📝 Bulk Transcript Extractor</button>
+    <button class="tab" data-panel="research">🔬 Video Research</button>
     <button class="tab" data-panel="media">⬇ Media Downloader</button>
     <button class="tab" data-panel="links">🔗 Video Links</button>
     <button class="tab" data-panel="keys">⚙ API Keys</button>
@@ -99,6 +100,25 @@ https://www.tiktok.com/@user/video/456..."></textarea></div>
       <div class="actions"><button class="btn" id="transcriptBtn">Extract Transcripts</button><button class="btn alt" id="copyAll">Copy all</button><button class="btn alt" id="downloadTxt">Download TXT</button><button class="btn alt" id="clearTranscript">Clear</button></div>
       <div id="transcriptStatus" class="status"></div>
       <div id="transcriptResults"></div>
+    </div>
+  </section>
+
+
+  <section id="research" class="panel">
+    <div class="card">
+      <h2>Video Research</h2>
+      <div class="sub">Build an AI-ready research package for one or many TikTok videos: transcript, views, likes, comments, shares, saves, and the available top-level comments. The app fetches comments page-by-page until the endpoint reports no more comments.</div>
+      <div style="margin-top:13px"><label>TikTok video links — one per line</label><textarea id="researchLinks" placeholder="https://www.tiktok.com/@user/video/123...
+https://www.tiktok.com/@user/video/456..."></textarea></div>
+      <div class="grid" style="margin-top:12px">
+        <div><label>Comments to collect</label><select id="researchCommentLimit"><option value="50">50 comments</option><option value="100">100 comments</option><option value="250">250 comments</option><option value="500">500 comments</option><option value="1000">1,000 comments</option><option value="all" selected>All available</option></select></div>
+        <div><label>Data collected</label><div class="note" style="padding-top:9px">Transcript + engagement + top-level comments</div></div>
+        <div><label>Replies</label><div class="note" style="padding-top:9px">Not included (separate endpoint/request per thread)</div></div>
+      </div>
+      <div class="actions"><button class="btn" id="researchBtn">🔬 Start Research</button><button class="btn alt" id="researchStop" disabled>Stop polling</button><button class="btn alt" id="researchCopy">Copy all</button><button class="btn alt" id="researchTxt">Download TXT</button><button class="btn alt" id="researchJson">Download JSON</button><button class="btn alt" id="researchClear">Clear</button></div>
+      <div id="researchStatus" class="status"></div>
+      <div id="researchProgress" class="progress hidden"><div class="bar" id="researchBar"></div></div>
+      <div id="researchResults"></div>
     </div>
   </section>
 
@@ -351,6 +371,67 @@ $('copyAll').onclick=()=>{const t=transcriptData.map(x=>`VIDEO ${x.index}\nTITLE
 $('downloadTxt').onclick=()=>{if(!transcriptData.length){status('transcriptStatus','Nothing to download yet.','bad');return}const t=transcriptData.map(x=>`============================================================\nVIDEO ${x.index}\nTITLE: ${x.title||'Untitled'}\nDURATION: ${x.duration||'Unknown'}\nURL: ${x.url}\n\n${x.transcript||'[No transcript returned]'}\n`).join('\n');downloadText(t,'tiktok_transcripts.txt')};
 $('clearTranscript').onclick=()=>{$('transcriptLinks').value='';transcriptData=[];$('transcriptResults').innerHTML='';status('transcriptStatus','')};
 
+
+let researchJobId=null;
+let researchPollTimer=null;
+
+function formatResearchComment(c){
+  const t=c.create_time?new Date(Number(c.create_time)*1000).toLocaleString():'';
+  const author=c.author?`@${c.author}`:'Unknown';
+  return `${author}${c.likes!=null?` · ${Number(c.likes).toLocaleString()} likes`:''}${t?` · ${t}`:''}\n${c.text||''}`;
+}
+function researchText(){
+  return (window.researchData||[]).map((x,i)=>{
+    if(!x || x.success===false) return `VIDEO ${i+1}\nURL: ${x?.url||''}\nERROR: ${x?.error||'Unknown error'}\n`;
+    const stats=[`Views: ${Number(x.views||0).toLocaleString()}`,`Likes: ${Number(x.likes||0).toLocaleString()}`,`Comments: ${Number(x.comments_count||0).toLocaleString()}`,`Shares: ${Number(x.shares||0).toLocaleString()}`,`Saves: ${Number(x.saves||0).toLocaleString()}`].join('\n');
+    const comments=(x.comments||[]).map((c,n)=>`[${n+1}] ${formatResearchComment(c)}`).join('\n\n');
+    return `============================================================\nVIDEO ${i+1}\n============================================================\nTITLE: ${x.title||'Untitled'}\nDURATION: ${x.duration||'Unknown'}\nURL: ${x.url||''}\n\nENGAGEMENT\n${stats}\n\nTRANSCRIPT\n${x.transcript||'[No transcript returned]'}\n\nCOMMENTS (${x.comments_fetched||0}${x.comments_total_reported!=null?` / ${x.comments_total_reported}`:''})\n${comments||'[No comments returned]'}`;
+  }).join('\n\n');
+}
+function renderResearch(){
+  const data=window.researchData||[];
+  $('researchResults').innerHTML=data.map((x,i)=>{
+    if(!x || x.success===false) return `<article class="result"><h3>Video ${i+1}</h3><div class="bad">${esc(x?.error||'Research failed.')}</div></article>`;
+    const stats=`<div class="meta">Views ${Number(x.views||0).toLocaleString()} · Likes ${Number(x.likes||0).toLocaleString()} · Comments ${Number(x.comments_count||0).toLocaleString()} · Shares ${Number(x.shares||0).toLocaleString()} · Saves ${Number(x.saves||0).toLocaleString()} · API credits ${Number(x.credits_charged||0)}</div>`;
+    const comments=(x.comments||[]).map((c,n)=>`<div style="padding:9px 0;border-bottom:1px solid #252a34"><b>#${n+1} ${esc(c.author?`@${c.author}`:'Unknown')}</b><div class="meta">${Number(c.likes||0).toLocaleString()} likes${c.create_time?` · ${new Date(Number(c.create_time)*1000).toLocaleString()}`:''}${c.reply_count?` · ${c.reply_count} replies available`:''}</div><div style="margin-top:5px;white-space:pre-wrap">${esc(c.text||'')}</div></div>`).join('');
+    return `<article class="result"><div class="row"><div><h3>Video ${i+1} — ${esc(x.title)}</h3>${stats}<div class="meta">Duration ${esc(x.duration||'Unknown')} · ${x.comments_fetched||0}${x.comments_total_reported!=null?` / ${x.comments_total_reported}`:''} top-level comments fetched</div></div><button class="btn alt smallbtn researchCopyOne" data-i="${i}">Copy video</button></div><details open style="margin-top:10px"><summary>Transcript</summary><div class="mono" style="margin-top:8px">${esc(x.transcript||'[No transcript returned]')}</div></details><details style="margin-top:10px"><summary>Comments (${x.comments_fetched||0})</summary><div style="margin-top:8px;max-height:520px;overflow:auto">${comments||'<div class="empty">No comments returned.</div>'}</div></details></article>`;
+  }).join('')||'<div class="empty">Research results will appear here.</div>';
+  document.querySelectorAll('.researchCopyOne').forEach(b=>b.onclick=()=>{const x=data[Number(b.dataset.i)];if(x) copyText(researchTextForOne(x),'researchStatus')});
+}
+function researchTextForOne(x){
+  if(!x||x.success===false)return `ERROR: ${x?.error||'Unknown error'}\n`;
+  const stats=`Views: ${Number(x.views||0).toLocaleString()}\nLikes: ${Number(x.likes||0).toLocaleString()}\nComments: ${Number(x.comments_count||0).toLocaleString()}\nShares: ${Number(x.shares||0).toLocaleString()}\nSaves: ${Number(x.saves||0).toLocaleString()}`;
+  const comments=(x.comments||[]).map((c,n)=>`[${n+1}] ${formatResearchComment(c)}`).join('\n\n');
+  return `TITLE: ${x.title}\nDURATION: ${x.duration}\nURL: ${x.url}\n\nENGAGEMENT\n${stats}\n\nTRANSCRIPT\n${x.transcript||'[No transcript returned]'}\n\nCOMMENTS\n${comments||'[No comments returned]'}`;
+}
+async function pollResearch(){
+  if(!researchJobId)return;
+  try{
+    const r=await fetch('/api/research-jobs/'+researchJobId,{cache:'no-store'});
+    const text=await r.text(); let d=null; try{d=JSON.parse(text)}catch{throw new Error(`Research status returned non-JSON (HTTP ${r.status})`)}
+    if(!r.ok||!d.success)throw new Error(d.error||`Research status HTTP ${r.status}`);
+    const finished=(d.done||0)+(d.failed||0); const pct=d.total?Math.round(finished/d.total*100):0;
+    setBar('researchBar',pct); status('researchStatus',`${d.message||'Researching…'} · ${d.result_count||0} results · Credits: ${d.credits_charged||0}`);
+    if(d.status==='running'||d.status==='queued'){researchPollTimer=setTimeout(pollResearch,800);return}
+    if(d.status==='done'){
+      const finalText=await fetch('/api/research-jobs/'+researchJobId+'?include_results=1',{cache:'no-store'}).then(async rr=>{const tx=await rr.text();let dd=null;try{dd=JSON.parse(tx)}catch{throw new Error(`Final research response returned non-JSON (HTTP ${rr.status})`)}if(!rr.ok||!dd.success)throw new Error(dd.error||`Final research response HTTP ${rr.status}`);return dd});
+      window.researchData=(finalText.results||[]).filter(Boolean);renderResearch();
+      setBar('researchBar',100);status('researchStatus',`${d.message||'Research complete.'} Total credits charged: ${d.credits_charged||0}.`,'good');researchJobId=null;$('researchBtn').disabled=false;$('researchStop').disabled=true;return}
+  }catch(e){status('researchStatus',e.message,'bad');researchPollTimer=setTimeout(pollResearch,1500)}
+}
+$('researchBtn').onclick=async()=>{
+  const links=$('researchLinks').value.trim();if(!links){status('researchStatus','Paste at least one TikTok URL.','bad');return}
+  const b=$('researchBtn');b.disabled=true;$('researchStop').disabled=false;b.textContent='Starting…';window.researchData=[];$('researchResults').innerHTML='';$('researchProgress').classList.remove('hidden');setBar('researchBar',2);status('researchStatus','Starting video research…');
+  try{
+    const d=await jsonFetch('/api/research-jobs',{...common(),links,max_comments:$('researchCommentLimit').value});researchJobId=d.job_id;pollResearch();
+  }catch(e){b.disabled=false;$('researchStop').disabled=true;b.textContent='🔬 Start Research';status('researchStatus',e.message,'bad')}
+};
+$('researchStop').onclick=()=>{if(researchPollTimer){clearTimeout(researchPollTimer);researchPollTimer=null}researchJobId=null;$('researchBtn').disabled=false;$('researchStop').disabled=true;status('researchStatus','Stopped polling. The server job may continue in the background.','good')};
+$('researchCopy').onclick=()=>{const t=researchText();if(!t){status('researchStatus','Nothing to copy yet.','bad');return}copyText(t,'researchStatus')};
+$('researchTxt').onclick=()=>{const t=researchText();if(!t){status('researchStatus','Nothing to download yet.','bad');return}downloadText(t,'tiktok_video_research.txt')};
+$('researchJson').onclick=()=>{const d=window.researchData||[];if(!d.length){status('researchStatus','Nothing to download yet.','bad');return}downloadText(JSON.stringify(d,null,2),'tiktok_video_research.json','application/json;charset=utf-8')};
+$('researchClear').onclick=()=>{if(researchPollTimer)clearTimeout(researchPollTimer);researchPollTimer=null;researchJobId=null;window.researchData=[];$('researchLinks').value='';$('researchResults').innerHTML='';$('researchProgress').classList.add('hidden');$('researchBtn').disabled=false;$('researchBtn').textContent='🔬 Start Research';$('researchStop').disabled=true;status('researchStatus','')};
+
 $('mediaPrepare').onclick=async()=>{
   const links=$('mediaLinks').value.trim();if(!links){status('mediaStatus','Paste at least one TikTok URL.','bad');return}
   const b=$('mediaPrepare');b.disabled=true;b.textContent='Preparing…';$('mediaResults').innerHTML='';status('mediaStatus',`Preparing ${links.split(/\s+/).filter(Boolean).length} media URL(s) concurrently…`);
@@ -379,8 +460,8 @@ async function downloadMediaZip(type){
 $('downloadAudioZip').onclick=()=>downloadMediaZip('audio');$('downloadVideoZip').onclick=()=>downloadMediaZip('video');
 $('clearMedia').onclick=()=>{$('mediaLinks').value='';mediaData=[];$('mediaResults').innerHTML='';status('mediaStatus','')};
 
-async function copyText(t){try{await navigator.clipboard.writeText(t);status('transcriptStatus','Copied to clipboard.','good')}catch{}}
-function downloadText(t,name){saveBlob(new Blob([t],{type:'text/plain;charset=utf-8'}),name)}
+async function copyText(t,statusId='transcriptStatus'){try{await navigator.clipboard.writeText(t);status(statusId,'Copied to clipboard.','good')}catch{status(statusId,'Clipboard copy failed; you can copy the text manually.','bad')}}
+function downloadText(t,name,type='text/plain;charset=utf-8'){saveBlob(new Blob([t],{type}),name)}
 function saveBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1500)}
 </script>
 </body>
