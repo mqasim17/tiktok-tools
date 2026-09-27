@@ -107,18 +107,36 @@ https://www.tiktok.com/@user/video/456..."></textarea></div>
   <section id="research" class="panel">
     <div class="card">
       <h2>Video Research</h2>
-      <div class="sub">Build an AI-ready research package for one or many TikTok videos: transcript, views, likes, comments, shares, saves, and the available top-level comments. The app fetches comments page-by-page until the endpoint reports no more comments.</div>
+      <div class="sub">Choose exactly what you need. Transcript, individual engagement metrics, and comments are independent options. When Comments is off, no comments API request is made.</div>
       <div style="margin-top:13px"><label>TikTok video links — one per line</label><textarea id="researchLinks" placeholder="https://www.tiktok.com/@user/video/123...
 https://www.tiktok.com/@user/video/456..."></textarea></div>
-      <div class="grid" style="margin-top:12px">
-        <div><label>Comments to collect</label><select id="researchCommentLimit"><option value="50">50 comments</option><option value="100">100 comments</option><option value="250">250 comments</option><option value="500">500 comments</option><option value="1000">1,000 comments</option><option value="all" selected>All available</option></select></div>
-        <div><label>Data collected</label><div class="note" style="padding-top:9px">Transcript + engagement + top-level comments</div></div>
-        <div><label>Replies</label><div class="note" style="padding-top:9px">Not included (separate endpoint/request per thread)</div></div>
+      <div class="card" style="margin:14px 0 0;padding:14px;background:#0d1016">
+        <div class="row"><strong>What do you want to extract?</strong><span class="badge">Choose any combination</span></div>
+        <div class="actions" style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:8px;width:auto;margin:0"><input type="checkbox" id="researchTranscript" checked style="width:18px;height:18px"> 📝 Transcript</label>
+          <label style="display:flex;align-items:center;gap:8px;width:auto;margin:0"><input type="checkbox" id="researchComments" style="width:18px;height:18px"> 💬 Comments</label>
+          <label style="display:flex;align-items:center;gap:8px;width:auto;margin:0"><input type="checkbox" id="researchMetrics" checked style="width:18px;height:18px"> 📊 Engagement metrics</label>
+        </div>
+        <div id="researchMetricBox" style="margin-top:12px">
+          <div class="note" style="margin-bottom:8px">Select the individual metrics you actually want:</div>
+          <div class="actions" style="margin-top:0">
+            <label style="display:flex;align-items:center;gap:7px;width:auto;margin:0"><input type="checkbox" class="metricChoice" value="views" checked style="width:17px;height:17px"> Views</label>
+            <label style="display:flex;align-items:center;gap:7px;width:auto;margin:0"><input type="checkbox" class="metricChoice" value="likes" checked style="width:17px;height:17px"> Likes</label>
+            <label style="display:flex;align-items:center;gap:7px;width:auto;margin:0"><input type="checkbox" class="metricChoice" value="comments_count" checked style="width:17px;height:17px"> Comments count</label>
+            <label style="display:flex;align-items:center;gap:7px;width:auto;margin:0"><input type="checkbox" class="metricChoice" value="shares" checked style="width:17px;height:17px"> Shares</label>
+            <label style="display:flex;align-items:center;gap:7px;width:auto;margin:0"><input type="checkbox" class="metricChoice" value="saves" checked style="width:17px;height:17px"> Saves</label>
+            <label style="display:flex;align-items:center;gap:7px;width:auto;margin:0"><input type="checkbox" class="metricChoice" value="downloads" style="width:17px;height:17px"> Downloads</label>
+            <label style="display:flex;align-items:center;gap:7px;width:auto;margin:0"><input type="checkbox" class="metricChoice" value="reposts" style="width:17px;height:17px"> Reposts</label>
+          </div>
+        </div>
+        <div id="researchCommentsBox" style="margin-top:12px;display:none" class="grid">
+          <div><label>Comments to collect</label><select id="researchCommentLimit"><option value="50">50 comments</option><option value="100">100 comments</option><option value="250">250 comments</option><option value="500">500 comments</option><option value="1000">1,000 comments</option><option value="all" selected>All available</option></select></div>
+          <div><label>Comment type</label><div class="note" style="padding-top:9px">Top-level comments. Replies are not fetched.</div></div>
+          <div><label>Credit behavior</label><div class="note" style="padding-top:9px">No comment requests are made when Comments is off.</div></div>
+        </div>
       </div>
       <div class="actions"><button class="btn" id="researchBtn">🔬 Start Research</button><button class="btn alt" id="researchStop" disabled>Stop polling</button><button class="btn alt" id="researchCopy">Copy all</button><button class="btn alt" id="researchTxt">Download TXT</button><button class="btn alt" id="researchJson">Download JSON</button><button class="btn alt" id="researchClear">Clear</button></div>
-      <div id="researchStatus" class="status"></div>
-      <div id="researchProgress" class="progress hidden"><div class="bar" id="researchBar"></div></div>
-      <div id="researchResults"></div>
+      <div id="researchStatus" class="status"></div><div id="researchProgress" class="progress hidden"><div class="bar" id="researchBar"></div></div><div id="researchResults"></div>
     </div>
   </section>
 
@@ -380,30 +398,44 @@ function formatResearchComment(c){
   const author=c.author?`@${c.author}`:'Unknown';
   return `${author}${c.likes!=null?` · ${Number(c.likes).toLocaleString()} likes`:''}${t?` · ${t}`:''}\n${c.text||''}`;
 }
+function selectedMetricFields(){ return [...document.querySelectorAll('.metricChoice:checked')].map(x=>x.value); }
+function metricLabel(key){ return ({views:'Views',likes:'Likes',comments_count:'Comments count',shares:'Shares',saves:'Saves',downloads:'Downloads',reposts:'Reposts'})[key]||key; }
 function researchText(){
   return (window.researchData||[]).map((x,i)=>{
-    if(!x || x.success===false) return `VIDEO ${i+1}\nURL: ${x?.url||''}\nERROR: ${x?.error||'Unknown error'}\n`;
-    const stats=[`Views: ${Number(x.views||0).toLocaleString()}`,`Likes: ${Number(x.likes||0).toLocaleString()}`,`Comments: ${Number(x.comments_count||0).toLocaleString()}`,`Shares: ${Number(x.shares||0).toLocaleString()}`,`Saves: ${Number(x.saves||0).toLocaleString()}`].join('\n');
+    if(!x||x.success===false)return `VIDEO ${i+1}\nURL: ${x?.url||''}\nERROR: ${x?.error||'Unknown error'}\n`;
+    const metricLines=(x.selected_metrics||[]).map(k=>`${metricLabel(k)}: ${x[k]==null?'N/A':Number(x[k]).toLocaleString()}`);
     const comments=(x.comments||[]).map((c,n)=>`[${n+1}] ${formatResearchComment(c)}`).join('\n\n');
-    return `============================================================\nVIDEO ${i+1}\n============================================================\nTITLE: ${x.title||'Untitled'}\nDURATION: ${x.duration||'Unknown'}\nURL: ${x.url||''}\n\nENGAGEMENT\n${stats}\n\nTRANSCRIPT\n${x.transcript||'[No transcript returned]'}\n\nCOMMENTS (${x.comments_fetched||0}${x.comments_total_reported!=null?` / ${x.comments_total_reported}`:''})\n${comments||'[No comments returned]'}`;
+    const parts=[`============================================================`,`VIDEO ${i+1}`,`============================================================`,`TITLE: ${x.title||'Unknown'}`,`DURATION: ${x.duration||'Unknown'}`,`URL: ${x.url||''}`];
+    if(metricLines.length)parts.push(`\nENGAGEMENT\n${metricLines.join('\n')}`);
+    if(x.include_transcript)parts.push(`\nTRANSCRIPT\n${x.transcript||'[No transcript returned]'}`);
+    if(x.include_comments)parts.push(`\nCOMMENTS (${x.comments_fetched||0}${x.comments_total_reported!=null?` / ${x.comments_total_reported}`:''})\n${comments||'[No comments returned]'}`);
+    return parts.join('\n');
   }).join('\n\n');
 }
 function renderResearch(){
   const data=window.researchData||[];
   $('researchResults').innerHTML=data.map((x,i)=>{
-    if(!x || x.success===false) return `<article class="result"><h3>Video ${i+1}</h3><div class="bad">${esc(x?.error||'Research failed.')}</div></article>`;
-    const stats=`<div class="meta">Views ${Number(x.views||0).toLocaleString()} · Likes ${Number(x.likes||0).toLocaleString()} · Comments ${Number(x.comments_count||0).toLocaleString()} · Shares ${Number(x.shares||0).toLocaleString()} · Saves ${Number(x.saves||0).toLocaleString()} · API credits ${Number(x.credits_charged||0)}</div>`;
+    if(!x||x.success===false)return `<article class="result"><h3>Video ${i+1}</h3><div class="bad">${esc(x?.error||'Research failed.')}</div></article>`;
+    const metrics=(x.selected_metrics||[]).map(k=>`<span class="badge" style="margin:2px 4px 2px 0">${esc(metricLabel(k))}: ${x[k]==null?'N/A':Number(x[k]).toLocaleString()}</span>`).join('');
     const comments=(x.comments||[]).map((c,n)=>`<div style="padding:9px 0;border-bottom:1px solid #252a34"><b>#${n+1} ${esc(c.author?`@${c.author}`:'Unknown')}</b><div class="meta">${Number(c.likes||0).toLocaleString()} likes${c.create_time?` · ${new Date(Number(c.create_time)*1000).toLocaleString()}`:''}${c.reply_count?` · ${c.reply_count} replies available`:''}</div><div style="margin-top:5px;white-space:pre-wrap">${esc(c.text||'')}</div></div>`).join('');
-    return `<article class="result"><div class="row"><div><h3>Video ${i+1} — ${esc(x.title)}</h3>${stats}<div class="meta">Duration ${esc(x.duration||'Unknown')} · ${x.comments_fetched||0}${x.comments_total_reported!=null?` / ${x.comments_total_reported}`:''} top-level comments fetched</div></div><button class="btn alt smallbtn researchCopyOne" data-i="${i}">Copy video</button></div><details open style="margin-top:10px"><summary>Transcript</summary><div class="mono" style="margin-top:8px">${esc(x.transcript||'[No transcript returned]')}</div></details><details style="margin-top:10px"><summary>Comments (${x.comments_fetched||0})</summary><div style="margin-top:8px;max-height:520px;overflow:auto">${comments||'<div class="empty">No comments returned.</div>'}</div></details></article>`;
+    const transcript=x.include_transcript?`<details open style="margin-top:10px"><summary>Transcript</summary><div class="mono" style="margin-top:8px">${esc(x.transcript||'[No transcript returned]')}</div></details>`:'';
+    const commentsBlock=x.include_comments?`<details style="margin-top:10px"><summary>Comments (${x.comments_fetched||0})</summary><div style="margin-top:8px;max-height:520px;overflow:auto">${comments||'<div class="empty">No comments returned.</div>'}</div></details>`:'';
+    return `<article class="result"><div class="row"><div><h3>Video ${i+1} — ${esc(x.title||'Unknown')}</h3><div class="meta">Duration ${esc(x.duration||'Unknown')} · API credits ${Number(x.credits_charged||0)}</div><div style="margin-top:7px">${metrics}</div></div><button class="btn alt smallbtn researchCopyOne" data-i="${i}">Copy video</button></div>${transcript}${commentsBlock}</article>`;
   }).join('')||'<div class="empty">Research results will appear here.</div>';
-  document.querySelectorAll('.researchCopyOne').forEach(b=>b.onclick=()=>{const x=data[Number(b.dataset.i)];if(x) copyText(researchTextForOne(x),'researchStatus')});
+  document.querySelectorAll('.researchCopyOne').forEach(b=>b.onclick=()=>{const x=data[Number(b.dataset.i)];if(x)copyText(researchTextForOne(x),'researchStatus')});
 }
 function researchTextForOne(x){
   if(!x||x.success===false)return `ERROR: ${x?.error||'Unknown error'}\n`;
-  const stats=`Views: ${Number(x.views||0).toLocaleString()}\nLikes: ${Number(x.likes||0).toLocaleString()}\nComments: ${Number(x.comments_count||0).toLocaleString()}\nShares: ${Number(x.shares||0).toLocaleString()}\nSaves: ${Number(x.saves||0).toLocaleString()}`;
-  const comments=(x.comments||[]).map((c,n)=>`[${n+1}] ${formatResearchComment(c)}`).join('\n\n');
-  return `TITLE: ${x.title}\nDURATION: ${x.duration}\nURL: ${x.url}\n\nENGAGEMENT\n${stats}\n\nTRANSCRIPT\n${x.transcript||'[No transcript returned]'}\n\nCOMMENTS\n${comments||'[No comments returned]'}`;
+  const lines=[`TITLE: ${x.title||'Unknown'}`,`DURATION: ${x.duration||'Unknown'}`,`URL: ${x.url||''}`];
+  const metricLines=(x.selected_metrics||[]).map(k=>`${metricLabel(k)}: ${x[k]==null?'N/A':Number(x[k]).toLocaleString()}`);
+  if(metricLines.length)lines.push(`\nENGAGEMENT\n${metricLines.join('\n')}`);
+  if(x.include_transcript)lines.push(`\nTRANSCRIPT\n${x.transcript||'[No transcript returned]'}`);
+  if(x.include_comments){const comments=(x.comments||[]).map((c,n)=>`[${n+1}] ${formatResearchComment(c)}`).join('\n\n');lines.push(`\nCOMMENTS\n${comments||'[No comments returned]'}`);}
+  return lines.join('\n');
 }
+$('researchMetrics').onchange=()=>{$('researchMetricBox').style.display=$('researchMetrics').checked?'block':'none'};
+$('researchComments').onchange=()=>{$('researchCommentsBox').style.display=$('researchComments').checked?'grid':'none'};
+
 async function pollResearch(){
   if(!researchJobId)return;
   try{
@@ -423,7 +455,7 @@ $('researchBtn').onclick=async()=>{
   const links=$('researchLinks').value.trim();if(!links){status('researchStatus','Paste at least one TikTok URL.','bad');return}
   const b=$('researchBtn');b.disabled=true;$('researchStop').disabled=false;b.textContent='Starting…';window.researchData=[];$('researchResults').innerHTML='';$('researchProgress').classList.remove('hidden');setBar('researchBar',2);status('researchStatus','Starting video research…');
   try{
-    const d=await jsonFetch('/api/research-jobs',{...common(),links,max_comments:$('researchCommentLimit').value});researchJobId=d.job_id;pollResearch();
+    const includeComments=$('researchComments').checked; const metricFields=$('researchMetrics').checked?selectedMetricFields():[]; const includeTranscript=$('researchTranscript').checked; if(!includeTranscript && !metricFields.length && !includeComments)throw new Error('Choose transcript, comments, or at least one metric.'); const d=await jsonFetch('/api/research-jobs',{...common(),links,include_transcript:includeTranscript,include_comments:includeComments,metric_fields:metricFields,max_comments:includeComments?$('researchCommentLimit').value:0}); researchJobId=d.job_id; pollResearch();
   }catch(e){b.disabled=false;$('researchStop').disabled=true;b.textContent='🔬 Start Research';status('researchStatus',e.message,'bad')}
 };
 $('researchStop').onclick=()=>{if(researchPollTimer){clearTimeout(researchPollTimer);researchPollTimer=null}researchJobId=null;$('researchBtn').disabled=false;$('researchStop').disabled=true;status('researchStatus','Stopped polling. The server job may continue in the background.','good')};
