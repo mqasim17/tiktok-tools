@@ -386,21 +386,14 @@ def creator_job_cancelled(job_id):
 def research_job_path(job_id):
     return os.path.join(job_dir(job_id), "research.json")
 
-def research_job_new(links, comment_mode="all", max_comments=None):
+def research_job_new(links, max_comments=None, include_transcript=True, metric_fields=None, include_comments=False):
     job_id = "research_" + uuid.uuid4().hex
     job = {
-        "status": "queued",
-        "links": links,
-        "total": len(links),
-        "done": 0,
-        "failed": 0,
-        "comment_mode": comment_mode,
-        "max_comments": max_comments,
-        "results": [None] * len(links),
-        "credits_charged": 0,
-        "message": "Queued",
-        "error": None,
-        "created": time.time(),
+        "status": "queued", "links": links, "total": len(links), "done": 0, "failed": 0,
+        "max_comments": max_comments, "include_transcript": bool(include_transcript),
+        "metric_fields": metric_fields or [], "include_comments": bool(include_comments),
+        "results": [None] * len(links), "credits_charged": 0, "message": "Queued",
+        "error": None, "created": time.time(),
     }
     write_json(research_job_path(job_id), job)
     return job_id
@@ -478,23 +471,33 @@ def fetch_all_comments(url, max_comments=None):
         cursor = next_cursor
     return comments, pages, charged, total_reported, False
 
-def research_video_worker(index, url, max_comments):
-    # One Video Info call gives title, duration, transcript and engagement stats.
-    info_data = api_get_rotating("/v2/tiktok/video", {
-        "url": url,
-        "get_transcript": "true",
-        "trim": "false",
-        "cache_max_age": "30d",
-        "region": "US",
-    })
-    info = extract_research_video_info(info_data)
-    comments, comment_pages, comment_credits, total_comments, limited = fetch_all_comments(url, max_comments)
-    info["comments"] = comments
-    info["comments_fetched"] = len(comments)
-    info["comments_total_reported"] = total_comments
-    info["comment_pages"] = comment_pages
-    info["comments_limited"] = limited
-    info["credits_charged"] = int(info["credits_charged"]) + comment_credits
+def research_video_worker(index, url, max_comments, include_transcript, metric_fields, include_comments):
+    info = {
+        "url": url, "title": "Untitled TikTok", "duration": "", "transcript": "",
+        "views": None, "likes": None, "comments_count": None, "shares": None, "saves": None,
+        "downloads": None, "reposts": None, "comments": [], "comments_fetched": 0,
+        "comments_total_reported": None, "comment_pages": 0, "comments_limited": False,
+        "cached": False, "credits_charged": 0,
+    }
+    if include_transcript or metric_fields:
+        info_data = api_get_rotating("/v2/tiktok/video", {
+            "url": url, "get_transcript": "true" if include_transcript else "false",
+            "trim": "false", "cache_max_age": "30d", "region": "US",
+        })
+        base = extract_research_video_info(info_data)
+        info["title"] = base["title"]; info["duration"] = base["duration"]; info["cached"] = base["cached"]
+        info["credits_charged"] += int(base["credits_charged"] or 0)
+        if include_transcript: info["transcript"] = base["transcript"]
+        for field in metric_fields:
+            if field in base: info[field] = base[field]
+    if include_comments:
+        comments, comment_pages, comment_credits, total_comments, limited = fetch_all_comments(url, max_comments)
+        info["comments"] = comments; info["comments_fetched"] = len(comments)
+        info["comments_total_reported"] = total_comments; info["comment_pages"] = comment_pages
+        info["comments_limited"] = limited; info["credits_charged"] += comment_credits
+    info["selected_metrics"] = list(metric_fields)
+    info["include_transcript"] = bool(include_transcript)
+    info["include_comments"] = bool(include_comments)
     return info
 
 def video_research_worker(job_id):
@@ -502,6 +505,9 @@ def video_research_worker(job_id):
     if not job: return
     links = job.get("links") or []
     max_comments = job.get("max_comments")
+    include_transcript = bool(job.get("include_transcript", True))
+    metric_fields = job.get("metric_fields") or []
+    include_comments = bool(job.get("include_comments", False))
     results = [None] * len(links)
     done = 0
     failed = 0
@@ -511,7 +517,7 @@ def video_research_worker(job_id):
     def one(item):
         idx, url = item
         try:
-            return idx, research_video_worker(idx, url, max_comments), None
+            return idx, research_video_worker(idx, url, max_comments, include_transcript, metric_fields, include_comments), None
         except Exception as exc:
             return idx, {"url": url, "success": False, "error": str(exc)}, str(exc)
 
@@ -702,18 +708,28 @@ def research_job_start():
     links = parse_links(body.get("links") or "")
     if not links:
         return jsonify(success=False, error="Paste at least one TikTok video URL."), 400
+    include_transcript = bool(body.get("include_transcript", True))
+    include_comments = bool(body.get("include_comments", False))
+    allowed_metrics = ["views", "likes", "comments_count", "shares", "saves", "downloads", "reposts"]
+    requested_metrics = body.get("metric_fields") or []
+    if isinstance(requested_metrics, str):
+        requested_metrics = [x.strip() for x in requested_metrics.split(",") if x.strip()]
+    metric_fields = [x for x in requested_metrics if x in allowed_metrics]
+    if not include_transcript and not metric_fields and not include_comments:
+        return jsonify(success=False, error="Choose at least one research component: transcript, metrics, or comments."), 400
     raw_limit = body.get("max_comments")
-    if raw_limit in (None, "", "all"):
+    if not include_comments:
+        max_comments = 0
+    elif raw_limit in (None, "", "all"):
         max_comments = None
     else:
         try:
             max_comments = max(1, min(int(raw_limit), 100000))
         except Exception:
             return jsonify(success=False, error="Invalid comments limit."), 400
-
-    job_id = research_job_new(links, comment_mode="all" if max_comments is None else "limited", max_comments=max_comments)
+    job_id = research_job_new(links, max_comments=max_comments, include_transcript=include_transcript, metric_fields=metric_fields, include_comments=include_comments)
     threading.Thread(target=video_research_worker, args=(job_id,), daemon=True).start()
-    return jsonify(success=True, job_id=job_id, total=len(links), max_comments=max_comments)
+    return jsonify(success=True, job_id=job_id, total=len(links), include_transcript=include_transcript, include_comments=include_comments, metric_fields=metric_fields, max_comments=max_comments)
 
 @app.get("/api/research-jobs/<job_id>")
 def research_job_status(job_id):

@@ -28,3 +28,6 @@ v14 fix: media URL validation now accepts the TikTok CDN families actually retur
 v15 addition: Video Research tab. One Video Info request (with transcript) supplies title, duration, and engagement statistics; the Comments endpoint is paginated and costs 1 credit per request. The research job runs in the background and can collect all available top-level comments or a selected limit, with TXT/JSON exports. Comment replies are not fetched in this version because the API documents them as a separate 1-credit-per-request endpoint per comment thread.
 
 v16: research polling is lightweight; full comments/transcripts/statistics are returned only once at job completion. Research copy/export helpers are isolated from existing tools.
+
+
+v17: research inputs now independently select transcript, individual engagement metrics, and comments. Comments-off jobs make no comment API calls.
